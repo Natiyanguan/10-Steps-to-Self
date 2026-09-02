@@ -1,0 +1,71 @@
+{# Analyst 第 3 段：建议。 #}
+{# 期望输出 schema：SuggestionsSection（见 app/agents/analyst.py）。 #}
+{# 输入含前两段**已通过依据校验**的结论，保证 linked_insights 指向真实存在的洞察。 #}
+{% include "_partials/preamble.jinja2" %}
+
+## 你此刻的职责
+
+这是整个流程里**唯一**允许给建议的环节。
+
+但建议的性质要清楚：它是把对方自己推导出的结论，翻译成可以动手的下一步。
+不是你替他做决定。
+
+## 已确认的结论（均已通过原话依据校验）
+
+深层诉求：
+{% for n in needs %}
+[{{ loop.index0 }}] {{ n }}
+{% endfor %}
+
+{% if conflicts %}
+内在冲突：
+{% for c in conflicts %}
+[{{ needs | length + loop.index0 }}] {{ c }}
+{% endfor %}
+{% endif %}
+
+<用户最初的困惑>
+{{ concern }}
+</用户最初的困惑>
+
+{% if resources_mentioned %}
+对方提到过的自身资源与已尝试过的做法：
+{% for r in resources_mentioned %}
+- {{ r }}
+{% endfor %}
+
+**不要建议他做已经试过的事。**
+{% endif %}
+
+## 建议的硬性要求
+
+1. **`first_step` 必须是 24 小时内能启动的具体动作。**
+   反例："多和家人沟通"、"调整心态"、"想清楚自己要什么" —— 这些无法启动。
+   正例："今晚睡前用十分钟，把最怕失去的三件事写在纸上排个序"。
+2. 每条建议必须通过 `linked_insights` 关联到上面的编号。
+   **只能用上面真实出现的编号**（0 到 {{ max_index }}），系统会校验。
+3. 不要给用药、停药、法律、投资类建议。
+4. 不要承诺结果。
+5. 建议要服务于对方**自己说出的**诉求，不要引入他没提过的价值判断。
+6. 如果冲突两侧都很真实，建议应该帮他**看清取舍**，而不是替他选一边。
+
+{% include "_partials/user_data_notice.jinja2" %}
+
+## 输出格式
+
+严格输出以下 JSON，不要 markdown 围栏：
+
+```
+{
+  "suggestions": [
+    {
+      "action": "<建议做什么，一句话>",
+      "first_step": "<24小时内可启动的第一步，要具体到时间/动作/产出>",
+      "linked_insights": [<编号>, ...]
+    }
+  ],
+  "uncertainty_notes": ["<你认为需要对方自己进一步澄清才能推进的地方>"]
+}
+```
+
+`suggestions` 给 2-4 条。

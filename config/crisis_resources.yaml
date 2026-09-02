@@ -1,0 +1,92 @@
+# 危机资源配置（路线文档 §3.4 / §16.2）
+#
+# 硬约束：这些信息**绝不由模型生成**，只从本文件读取。
+# 模型编造错误的求助电话，后果不可接受。
+#
+# 维护要求：
+#   - 上线前必须由人工逐条核对号码有效性（§3.8 专家审计的一部分）
+#   - 号码变更走配置发布，不需要改代码
+#   - 启动自检会校验本文件存在且条目非空，缺失则拒绝启动（§13.2.2）
+
+version: "2026-09-01"
+last_verified: "2026-09-01"      # 人工核验日期，超过 180 天应告警
+
+# 免责声明（§3.1 / 决策 #10：只在会话开始、报告显著位置、危机分支出现）
+disclaimer: |
+  本工具用于自我探索与思维梳理，不是医疗服务，不提供诊断或治疗。
+  如你正处于痛苦之中，专业的人可以更好地帮到你 —— 下面是一些可以联系的渠道。
+
+# 危机分支的开场语（温和、不评判、不追问）
+crisis_message: |
+  谢谢你愿意说出来。你刚才提到的内容让我有些担心，
+  所以我想先停下提问 —— 现在更重要的是你能得到真正的支持。
+
+regions:
+  CN:
+    label: 中国大陆
+    hotlines:
+      - name: 全国心理援助热线
+        number: "12356"
+        hours: 视各地安排，多数 24 小时
+        note: 国家卫健委统一心理援助热线
+      - name: 北京心理危机研究与干预中心热线
+        number: "010-82951332"
+        hours: 24 小时
+      - name: 希望24热线（生命教育与危机干预）
+        number: "4001619995"
+        hours: 24 小时
+    emergency:
+      - name: 急救
+        number: "120"
+      - name: 报警
+        number: "110"
+    guidance: |
+      如果你现在有伤害自己的具体计划或手边有危险物品，请立刻联系 120 或 110，
+      或让身边任何一个人陪着你。
+
+  HK:
+    label: 香港
+    hotlines:
+      - name: 撒玛利亚防止自杀会
+        number: "2389 2222"
+        hours: 24 小时
+      - name: 生命热线
+        number: "2382 0000"
+        hours: 24 小时
+    emergency:
+      - name: 紧急求助
+        number: "999"
+
+  TW:
+    label: 台湾
+    hotlines:
+      - name: 安心专线
+        number: "1925"
+        hours: 24 小时
+      - name: 生命线协谈专线
+        number: "1995"
+        hours: 24 小时
+    emergency:
+      - name: 紧急求助
+        number: "119"
+
+  US:
+    label: United States
+    hotlines:
+      - name: 988 Suicide & Crisis Lifeline
+        number: "988"
+        hours: 24/7
+    emergency:
+      - name: Emergency
+        number: "911"
+
+  INTL:
+    label: 其他地区
+    hotlines:
+      - name: Find A Helpline
+        number: "https://findahelpline.com"
+        hours: 按所在地查询
+    emergency: []
+    guidance: 请通过上述网站查询你所在国家/地区的危机支持热线。
+
+default_region: CN

@@ -1,5 +1,95 @@
 [project]
 name = "10-steps-to-self"
 version = "0.1.0"
+description = "苏格拉底式反向提问的自我探索 Agent"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # 编排与校验
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    # LLM（OpenAI 兼容协议：DeepSeek 与本地模型共用）
+    "openai>=1.40",
+    "httpx>=0.27",
+    # 提示词与配置
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    # 计数（对 DeepSeek 为估算，见 §6.3）
+    "tiktoken>=0.7",
+    # 繁简归一化：危机词表与 Evidence 校验都依赖它（手写映射表必然漏字）
+    "zhconv>=1.4.3",
+    # 日志
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+# 云端档位：不装 torch，镜像小
+cloud = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "alembic>=1.13",
+    "redis[hiredis]>=5.0",
+    "arq>=0.26",
+    "chromadb>=0.5",
+    "rank-bm25>=0.2.2",
+    "jieba>=0.42",
+    "prometheus-client>=0.20",
+    "sentry-sdk>=2.0",
+]
+# 本地档位：hybrid / local 才需要（体积数 GB，见 §16.3）
+local = [
+    "FlagEmbedding>=1.2",
+    "sentence-transformers>=3.0",
+    "torch>=2.3",
+    "numpy>=1.26",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+tss = "app.cli:main"
+tss-probe = "scripts.probe_providers:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# ASYNC109：这里的 timeout 是**转发给 httpx** 的请求超时，不是 asyncio 层面的截止时间。
+#   探测脚本必须能对每个探测项单独设超时（有的模型首字延迟就有几十秒），
+#   改成 asyncio.timeout 反而拿不到 httpx 的分级超时语义。
+# ASYNC240：脚本收尾时一次性写配置与报告，此刻已无并发工作可推进。
+"scripts/probe_providers.py" = ["ASYNC109", "ASYNC240"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["yaml.*", "tiktoken.*", "langgraph.*", "jieba.*", "FlagEmbedding.*", "zhconv.*"]
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

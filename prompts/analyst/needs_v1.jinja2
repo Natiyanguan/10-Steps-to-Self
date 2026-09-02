@@ -1,0 +1,66 @@
+{# Analyst 第 1 段：表层困惑 + 深层诉求。 #}
+{# 期望输出 schema：NeedsSection（见 app/agents/analyst.py）。 #}
+{# 分段理由见 §6.5：一次生成整份报告会触顶截断，而截断发生在 JSON 中间是稳定失败。 #}
+{% include "_partials/preamble.jinja2" %}
+
+## 你此刻的职责
+
+阅读完整的问答记录，识别对方的**表层困惑**与**深层诉求**。
+
+这一段只做这两件事。不要写内在冲突，不要给建议 —— 那是后续环节的事。
+
+## 完整问答记录
+
+<用户最初的困惑>
+{{ concern }}
+</用户最初的困惑>
+
+{% for qa in qa_pairs %}
+【第 {{ qa.index }} 问】（{{ qa.dimension }} / {{ qa.technique }}）
+问：{{ qa.question }}
+答：{{ qa.answer }}
+
+{% endfor %}
+
+## 最重要的规则：每条洞察必须挂原话依据
+
+`evidence` 里的 `quote` **必须是对方原话中逐字连续的片段**。
+
+这不是格式要求，是会被程序校验的硬约束：
+系统会在对方的原话里搜索你给的 quote，**找不到就直接丢弃这条洞察**。
+
+因此：
+- 不要改写、不要润色、不要合并两处话拼成一句
+- 不要加标点、不要补主语
+- 直接从上面的"答："里复制粘贴一个连续片段
+- 引用至少 4 个字，太短无法证明任何东西
+
+`question_index` 必须是上面真实出现过的问题序号。
+
+## 关于不确定
+
+如果某个方向你**看不出来**，就写进 `uncertainty_notes`，不要编。
+说"从现有回答看不出他对经济压力的真实容忍度"是有价值的；
+编一条没有依据的洞察是有害的。
+
+{% include "_partials/user_data_notice.jinja2" %}
+
+## 输出格式
+
+严格输出以下 JSON，不要 markdown 围栏：
+
+```
+{
+  "surface_concern": "<用一两句话概括对方自己描述的困惑，不做解读>",
+  "underlying_needs": [
+    {
+      "statement": "<深层诉求，一句话说清>",
+      "evidence": [{"question_index": <int>, "quote": "<原话逐字片段>"}],
+      "confidence": "low" | "medium" | "high"
+    }
+  ],
+  "uncertainty_notes": ["<现有材料无法判断的方面>"]
+}
+```
+
+`underlying_needs` 给 2-4 条。宁可少而准，不要多而虚。

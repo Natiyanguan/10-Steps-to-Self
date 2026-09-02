@@ -1,8 +1,15 @@
-# 10-Steps-to-Self 技术路线文档（终版 v2.0）
+# 10-Steps-to-Self 技术路线文档（终版 v3.0）
 
 > 一个基于「苏格拉底式反向提问」的自我探索 Agent。
 > 本文档合并了两份前置技术路线（`TECH_ROADMAP.md` 与 `技术路线FromDeepSeek.txt`），
+> 并在 v3.0 中**按实际可用的 API 与本地模型条件定稿**，
 > 做了显式取舍并保留理由，**用于直接驱动下游 AI 编码工具生成工程代码**。
+
+**v3.0 相对 v2.0 的变化**（由实际供应商条件驱动，见 §0.1 决策 #15-#24）：
+云端 LLM 定为 DeepSeek，嵌入定为智谱 embedding-3，二者均可切本地模型；
+新增**模型能力分级与门控**（防止弱模型静默劣化输出）、**三档运行档位**（cloud/hybrid/local）、
+**知识库构建管线**（Bocha/Tavily/OpenAlex，离线运行）、**供应商能力探测清单**；
+修订了结构化输出策略、向量库选型与维度、报告分段生成。
 
 - 目标环境：Python 3.12（项目现状） / Windows 11 开发 + Linux 容器部署
 - 文档约定：`MUST` 必须实现 · `SHOULD` 建议实现 · `LATER` 明确延后 · `REJECTED` 明确不做
@@ -32,6 +39,27 @@
 | 12 | 部署 | 容器 + 水平扩容 | K8s + HPA + Serverless 可选 | **容器 → K8s（P5）；Serverless 明确 REJECTED** | 长会话有状态 + SSE 流式 + 冷启动，Serverless 不匹配 |
 | 13 | Python 版本 | 3.12 | 3.11 | **3.12** | 项目 `pyproject.toml` 已锁定 `>=3.12` |
 | 14 | Reranker 分数接近 | 相对差距判据 + 校准 + 弃检索 | LLM 终审打分 | **两者结合：先用相对差距，仅在关键路径且候选≤5 时才 LLM 终审** | LLM 终审有效但贵且慢，不能作为默认路径 |
+
+### 0.1 v3.0 新增决策（由实际 API 与本地模型条件驱动）
+
+| # | 议题 | 决策 | 理由 |
+|---|---|---|---|
+| 15 | 云端 LLM | **DeepSeek（OpenAI 兼容协议）**，强档 / 快档双档 | 已有可用 key；中文强、成本低；OpenAI 兼容协议让本地模型复用同一 adapter |
+| 16 | 本地 LLM 定位 | **minimind 仅用于开发/CI/离线冒烟，不承担 Planner / Interviewer / Analyst / Critic** | 见 §2.4：minimind 是从零训练的小参数教学模型，不具备本产品所需的长上下文、指令遵循与结构化输出能力。让它跑核心链路会产出"格式完整但内容失效"的结果 |
+| 17 | 能力门控 | **Provider 必须声明能力；Gateway 对能力不足的任务拒绝路由并显式降级，禁止"试一试"** | #16 的工程保障。没有门控，切弱模型只会静默劣化，而静默劣化是本文档全篇最想避免的失败模式（§9.5） |
+| 18 | 向量库（修订 #4） | **Chroma 承担 P0-P3 → pgvector 在 Postgres 落地后接入，二者同在 `VectorStore` 抽象下** | 新信息推翻原判断：embedding-3 为 2048 维，而 pgvector 的 HNSW/IVFFlat 索引上限为 2000 维，`vector(2048)` 无法建索引（见 §2.6） |
+| 19 | 嵌入维度 | **统一收敛到 1024 维**（embedding-3 若支持 `dimensions` 参数则请求降维；否则保留 2048 走 Chroma，pgvector 侧用 `halfvec`） | 1024 同时满足 pgvector 索引上限与本地 BGE-M3 原生维度，使云/本地切换不必改表结构 |
+| 20 | 结构化输出（修订 §6.2） | **JSON 模式 + schema 校验 + 修复重试为主路径；function calling 仅在探测确认支持后启用** | DeepSeek 系与本地模型对 function calling 支持不一致，推理型模型常不支持工具调用或温度。把 function calling 当唯一路径会在换模型时整链失效 |
+| 21 | 报告生成 | **分段生成（诉求 → 冲突 → 建议）并可续写，不一次生成整份报告** | 实际配置 `LLM_MAX_TOKENS=4096`，推理型模型的思维链还要占额度。整份报告极易触顶截断，且截断发生在 JSON 中间会直接解析失败 |
+| 22 | 联网搜索边界 | **Bocha/Tavily 仅用于离线知识库构建与资源核验，绝不接收用户原话** | 把用户心理独白发给搜索引擎是不可逆的隐私泄露，且搜索结果对"提问质量"无帮助。见 §7.7 |
+| 23 | 学术检索 | **OpenAlex 用于离线构建带真实出处的技术库，只入库真实 `doi`/`work_id`** | 正面解决决策 #6 的"模型编造书名页码"：引用必须来自库内真实记录，可程序化核验 |
+| 24 | 跨厂商降级 | **必须再接一家云厂商作为熔断兜底；智谱同一 key 若可调对话模型则为首选兜底（待实测）** | 当前只有 DeepSeek 一家对话供应商，§9.2 的"备用供应商"是空的——单厂故障即全站不可用 |
+
+**关于 v3.0 的一处说明：**
+用户提供的模型标识与"embedding-3 为 2048 维"均按用户实测结论采用。
+本文档因此**不在任何地方硬编码模型名与维度**，
+而要求启动时按 §17 探测清单实测能力并落盘 ——
+这样无论标识与实际能力如何变化，工程都不会建立在过期假设之上。
 
 **两版各自的独有价值，终版全部吸收：**
 
@@ -120,23 +148,25 @@ class Technique(StrEnum):
 | Web 框架 | **FastAPI + uvicorn** | — | async 原生、SSE 支持、Pydantic 一体化 |
 | 编排 | **LangGraph** + checkpoint | — | 状态机、中断续跑、条件边【决策 #2】 |
 | LLM 抽象 | **自建 `LLMGateway`** 封装 | 直接用 LangChain | 需要精细控制超时/熔断/降级/计量，LangChain 封装不够 |
-| 主模型（提问/分析） | 强指令遵循的长上下文模型 | 多供应商可切换 | 见 2.1 抽象层，**不在代码中硬编码模型名** |
-| 辅助模型（安全/摘要/质量评估） | 小而快的同族模型 | 本地 Llama 3.1 8B | 成本与延迟优化，见 8.4 |
-| 结构化输出 | **function calling / structured output** | — | 不用"请输出 JSON"自然语言约定 |
+| 强档模型（规划/提问/分析/Critic） | **DeepSeek 强档（OpenAI 兼容协议）** | 第二家云厂商（兜底，决策 #24） | 【决策 #15】能力要求见 §2.4；**代码中不硬编码模型名** |
+| 快档模型（安全/质量/摘要/改写） | **DeepSeek 快档** | 本地 Qwen2.5-7B-Instruct 等 | 成本与延迟优化，见 §9.4 |
+| 本地模型 | **minimind（仅开发/CI/冒烟）**；生产级本地用 Ollama/vLLM 托管指令模型 | — | 【决策 #16】能力门控见 §2.4 |
+| 结构化输出 | **JSON 模式 + schema 校验 + 修复重试** | function calling（探测确认后启用） | 【决策 #20】见 §6.2 |
 | 关系库 | **PostgreSQL 16**（开发可 SQLite） | — | 会话、消息、记忆、审计 |
-| 向量库 | **pgvector 起步** | **Qdrant**（>100 万块或需高级过滤时） | 【决策 #4】少一个组件、事务内一致写；抽象层保证可切换 |
-| 关键词检索 | **PostgreSQL 全文检索 / rank-bm25** | Elasticsearch | 中文需自定义分词，见 2.2 |
-| Embedding | **BGE-M3**（中文强、支持多粒度） | text-embedding-3-large | 中文场景 BGE-M3 明显更优 |
-| Reranker | **bge-reranker-v2-m3** | Cohere Rerank | 本地部署可控延迟，见 7.4 |
+| 向量库 | **Chroma（P0-P3）** | **pgvector**（Postgres 落地后）· Qdrant（规模化） | 【决策 #18】2048 维触及 pgvector 索引上限，见 §2.6 |
+| 关键词检索 | **rank-bm25 + jieba（进程内）** | PostgreSQL 全文检索（迁 pgvector 时） | 中文必须先分词，见 §2.2 |
+| Embedding（云） | **智谱 `embedding-3`**（实测 2048 维） | — | 目标维度统一 1024，见 §2.6【决策 #19】 |
+| Embedding（本地） | **BGE-M3**（原生 1024 维，中文强） | bge-large-zh-v1.5 | 与云端同维，切换不改表结构 |
+| Reranker | **bge-reranker-v2-m3（本地）** | 无（降级到 RRF 排名） | 无云端 rerank API，本地是唯一选项，见 §7.4 |
 | 缓存 / 锁 | **Redis 7** | — | 分布式锁、幂等键、限流令牌桶、会话热态 |
 | 任务队列 | **Redis + arq**（轻量） | Celery / RabbitMQ | 【决策 #3】仅报告生成等长任务用，不做全链路事件驱动 |
 | 配置 | **pydantic-settings + .env** | — | 启动即校验，缺失快速失败 |
 | 提示词管理 | **jinja2 外置文件 + 版本化** | LangSmith Hub | 改配置即切版本，无需部署 |
-| 日志 | **loguru → JSON** | — | 结构化字段固定，隐私红线见 10.1 |
+| 日志 | **loguru → JSON** | — | 结构化字段固定，隐私红线见 §11.1 |
 | Trace | **OpenTelemetry** | LangSmith / Langfuse | LangSmith 便于 LLM 专项调试，SHOULD |
 | 指标 | **Prometheus + Grafana** | — | 吸收 DeepSeek |
 | 错误追踪 | **Sentry** | — | 吸收 DeepSeek；必须配 PII 脱敏钩子 |
-| 内容审核 | **供应商 Moderation API + 自建词表** | — | 吸收 DeepSeek，但词表层不可省，见 4.2 |
+| 内容审核 | **自建词表为主**（供应商 moderation 仅作可选第三信号） | — | 词表层不可省，见 §3.4 |
 | 测试 | **pytest + pytest-asyncio + respx** | — | respx mock httpx |
 | 质量 | **ruff + mypy strict** | — | CI 门禁 |
 | 容器 | **Docker + docker-compose**（开发） | **K8s + HPA**（P5） | 【决策 #12】Serverless REJECTED |
@@ -166,13 +196,14 @@ class ChatProvider(Protocol):
 
 1. **BM25 分词**：中文无空格，必须接分词器（jieba / pkuseg）后再建索引。
    直接用英文 tokenizer 做中文 BM25 等于关键词检索失效。
-2. **Embedding 选型**：优先中文表现强的模型（BGE-M3），不要默认用英文优化模型。
+2. **Embedding 选型**：云端用智谱 `embedding-3`，本地用 BGE-M3（均为中文强模型）。
+   **不要默认用英文优化模型**；跨语言模型在中文口语表述上召回明显更差。
 3. **Token 计数偏差**：中文 token/字符比与英文差异大（约 1 字 ≈ 0.6-1.5 token，随模型而变）。
    `ContextBudgeter` **必须用目标模型自己的 tokenizer 实测**，
    不可用"字符数 ÷ 4"这类英文经验公式，否则预算估算会系统性偏低并导致意外截断。
 4. **Evidence 子串匹配**：中文需归一化处理（全角/半角、中英标点、空白、繁简），
    否则用户原话校验会因标点差异误判失败，见 6.3。
-5. **危机词表**：必须覆盖中文谐音、拆字、拼音缩写、火星文变体，见 4.2。
+5. **危机词表**：必须覆盖中文谐音、拆字、拼音缩写、火星文变体，见 §3.4。
 
 ### 2.3 MCP 定位 — SHOULD
 
@@ -181,6 +212,165 @@ class ChatProvider(Protocol):
 - **作为 MCP Server**：把「提问技术库检索」「维度覆盖检查」等**无状态能力**暴露给外部客户端。
 - **作为 MCP Client**：接入外部工具（如查询本地心理援助资源目录）。
 - **明确不做**：不通过 MCP 暴露用户记忆或会话状态。用户心理数据不得跨信任边界流出。
+
+### 2.4 模型能力分级与门控 — MUST（v3.0 核心新增）
+
+用户要求"尽可能多用本地模型且可切换"。**可切换是架构目标，等价可用不是事实。**
+本节把这件事写成代码约束，避免下游工具把弱模型接到核心链路上。
+
+#### 2.4.1 任务对模型的真实要求
+
+| 任务 | 上下文需求 | 指令遵循 | 结构化输出 | 中文表达 | 最低档位 |
+|---|---|---|---|---|---|
+| Planner（规划 10 问） | 高（画像+检索+历史） | **极高**（多约束同时满足） | **必需**（嵌套 JSON） | 中 | `STRONG` |
+| Interviewer（渲染问题） | 中 | **极高**（不许给建议） | 必需（简单 JSON） | **极高**（措辞就是产品本体） | `STRONG` |
+| Analyst（分析报告） | **极高**（全量问答） | 极高 | **必需**（深层嵌套 + 原文引用） | 极高 | `STRONG` |
+| Critic（复核依据） | 高 | 高 | 必需 | 中 | `STRONG` |
+| Safety（风险判级） | 低（单条输入） | 中 | 必需（枚举 + 短文本） | 中 | `FAST` |
+| AnswerQuality（质量评估） | 低 | 中 | 必需（布尔 + 分数） | 低 | `FAST` |
+| Summarizer（摘要压缩） | 中 | 中 | 必需（含 `preserved_quotes` 原文回填） | 中 | `FAST` |
+| Query 改写（HyDE） | 低 | 低 | 可选 | 中 | `FAST` |
+| LLM 终审（重排） | 低 | 中 | 必需（0-3 打分） | 低 | `FAST` |
+
+#### 2.4.2 档位定义
+
+```python
+class ModelTier(StrEnum):
+    STRONG = "strong"   # 长上下文 + 强指令遵循 + 稳定 JSON：Planner/Interviewer/Analyst/Critic
+    FAST   = "fast"     # 中等能力、低延迟低成本：Safety/Quality/Summary/改写/终审
+    TOY    = "toy"      # 仅开发冒烟与 CI：能返回合法响应，内容质量不作保证
+
+class ProviderCaps(BaseModel):
+    tier: ModelTier
+    context_window: int
+    max_output_tokens: int
+    supports_json_mode: bool
+    supports_function_calling: bool
+    supports_temperature: bool          # 推理型模型常忽略或拒绝该参数
+    supports_streaming: bool
+    zh_quality: Literal["low", "medium", "high"]
+    tokenizer_hint: str                 # 用于选择计数器，见 §6.3
+    cost_per_1k_in: float | None
+    cost_per_1k_out: float | None
+    probed_at: datetime | None           # 由 §17 探测清单实测填充
+```
+
+#### 2.4.3 门控规则（硬约束）— MUST
+
+【决策 #17】
+
+1. `config/task_models.yaml` 写死**任务 → 所需最低档位**；
+   Gateway 路由时校验 `provider.caps.tier >= required_tier`。
+2. **档位不足则拒绝路由**，而不是"先试试看"：
+   抛 `InsufficientCapabilityError` → 走降级链 → 全链耗尽则返回 `LLM_UNAVAILABLE`。
+3. **`TOY` 档永远不允许承担 `STRONG` 任务**，无论配置怎么写。
+   这条在代码里是无条件断言，不读配置——配置写错不应让用户拿到劣质心理分析。
+4. 任务要求 `supports_json_mode` 而 provider 不支持，同样视为能力不足。
+5. 门控拒绝必须计入 `llm_capability_rejected_total{task,provider}` 并打日志。
+
+> **为什么单独立一节：** §9.5 反复强调"静默降级最危险"，
+> 而模型可切换恰恰是静默降级的最大入口 —— 换个 endpoint 就能跑通，
+> 但输出从"有依据的洞察"退化成"通顺的空话"，接口依然返回 200。
+> 能力门控是把这种退化变成显式失败的唯一手段。
+
+### 2.5 minimind 的定位与用法 — MUST
+
+用户希望用自己训练的 minimind。它在本项目里的正确位置是**测试替身**，不是生产模型。
+
+**事实基础**：minimind 是从零训练的小参数（约 0.02B–0.1B 量级）中文语言模型教学项目，
+上下文通常 512–1024 token，未经专门微调时**不具备稳定的复杂指令遵循与嵌套 JSON 生成能力**。
+
+**因此**（决策 #16）：
+
+| 用途 | 是否允许 | 说明 |
+|---|---|---|
+| CI / 本地冒烟：验证 adapter、流式、超时、重试链路真的通 | ✅ **推荐** | 比 FakeLLM 更真实（真走 HTTP、真有 tokenizer 行为），且免费离线 |
+| 开发期跑通 Graph 全流程而不烧 token | ✅ 允许 | 只断言"流程走完、schema 未崩"，不断言内容质量 |
+| 演示"可切换本地模型"的架构能力 | ✅ 允许 | 这是架构演示，不是质量演示 |
+| Safety 风险判级 | ❌ **禁止** | 安全不能建立在能力不足的模型上；规则层 + `FAST` 档才是安全路径 |
+| Planner / Interviewer / Analyst / Critic | ❌ **禁止**（`TOY` 硬阻断） | 见 §2.4.3 第 3 条 |
+
+**接入方式**：minimind 若有 OpenAI 兼容的 serve 接口，直接复用 `OpenAICompatProvider`
+（与 DeepSeek 同一 adapter，仅 `base_url` / `model` 不同），配置中标 `tier: toy`。
+若只有原生推理脚本，写一个薄 HTTP 包装 `app/llm/providers/local_minimind.py`
+把它变成 OpenAI 兼容形状 —— **不要为它在业务层开特例分支**。
+
+**若确实想让本地模型承担生产任务**：正确路径不是提升 minimind，
+而是用 Ollama / vLLM 托管一个**指令微调过的 7B 级中文模型**（如 Qwen2.5-7B-Instruct），
+经 §17 探测确认 `supports_json_mode` 与中文质量后，标为 `FAST` 档承接安全/质量/摘要。
+`STRONG` 档在消费级硬件上难以本地满足（需长上下文 + 强指令遵循），
+本文档建议 `STRONG` 保持云端；除非合规要求数据不出境，
+此时接受质量下降并**在 §7.5 评估集上量化这个下降幅度**，而不是假装没有下降。
+
+### 2.6 向量库与嵌入维度（修订决策 #4）— MUST
+
+**新信息推翻了 v2.0 的判断：**
+`embedding-3` 实测 **2048 维**，而 pgvector 的 **HNSW 与 IVFFlat 索引上限是 2000 维**
+（`vector` 列本身能存到 16000 维，但**无法为超过 2000 维的列建这两种索引**，
+只能顺序扫描——那等于没有向量库）。v2.0 写的 `vector(1024)` 与"pgvector 起步"在 2048 维前提下不成立。
+
+| 方案 | 做法 | 取舍 |
+|---|---|---|
+| **1. 降维到 1024（目标）** | 若 `embedding-3` 支持 `dimensions` 参数则直接请求 1024；否则做**确定性投影 + 重新归一化** | 与本地 BGE-M3 原生 1024 维**完全对齐**，云/本地切换无需改表；pgvector 可正常建 HNSW |
+| **2. 保留 2048 + Chroma（P0-P3 实际路径）** | Chroma 无 2000 维索引限制，`CHROMA_COLLECTION` 已按 2048 命名配好 | 零基建、立即可用；与 pgvector 路线不通，后期需重建 |
+| **3. pgvector `halfvec`** | `halfvec` 支持到 4000 维建 HNSW（pgvector ≥ 0.7） | 可行但精度减半，作兜底而非首选 |
+
+**定稿（决策 #18 / #19）：**
+
+- **P0-P3 用 Chroma**（已配置、零基建），一律经 `VectorStore` 抽象访问。
+- **目标维度 1024**（`EMBED_TARGET_DIM=1024`）。
+  若供应商不支持降维请求，由 `app/rag/projection.py` 做确定性降维，
+  **且必须在 §7.5 检索评估集上验证 Recall@10 降幅 < 3%**，否则回退方案 2 并记录该决定。
+- `chunks` 除 `embed_model` 外**再记 `embed_dim` 与 `projection_version`**：
+  维度或投影方式变化与换模型等价，**同样要求全量重建**（见 §7.2）。
+- Postgres 落地后再评估是否迁 pgvector。**迁移不是必须** ——
+  本产品数据量级（技术库千级块 + 每用户百级块）Chroma 完全够用，
+  迁移动机应当来自真实瓶颈而非架构洁癖。
+
+**`VectorStore` 抽象 — MUST：**
+
+```python
+class VectorStore(Protocol):
+    async def upsert(self, scope: str, owner_id: str | None, chunks: list[Chunk]) -> None: ...
+    async def search(self, scope: str, owner_id: str | None, vec: list[float],
+                     k: int, filters: dict | None = None) -> list[Hit]: ...
+    async def delete_by_owner(self, owner_id: str) -> int: ...   # 级联删除，见 §3.6
+    async def delete_by_ids(self, ids: list[str]) -> int: ...
+    @property
+    def dim(self) -> int: ...                                    # 启动时校验与配置一致
+```
+
+`delete_by_owner` 必须存在于抽象层 —— 它是"假删除"合规缺陷的唯一防线（§3.6 / §12）。
+`dim` 属性用于启动自检：**维度与配置不符必须快速失败**，
+否则写入会静默产生不可检索的数据。
+
+### 2.7 供应商用途边界与密钥治理 — MUST
+
+| 资源 | 用途 | 是否接触用户原话 |
+|---|---|---|
+| DeepSeek（`LLM_*`） | 全部 LLM 任务 | **是**（受 §3.3 约束） |
+| 智谱 `embedding-3`（`EMBED_*`） | 向量化用户历史与知识库 | **是**（受 §3.3 约束） |
+| 本地 minimind / Ollama | 开发冒烟 / 未来 `FAST` 档 | 是，但不出本机（隐私最优） |
+| Bocha（`BOCHA_API_KEY`） | **仅**离线知识库构建（中文网） | **绝不**（决策 #22） |
+| Tavily（`TAVILY_API_KEY`） | **仅**离线知识库构建（国际网） | **绝不**（决策 #22） |
+| OpenAlex（`OPENALEX_*`） | **仅**离线学术出处采集 | **绝不**（决策 #23） |
+
+**为什么搜索类 API 绝不能接用户原话**（决策 #22）：
+把用户的心理独白发给搜索引擎是**不可逆的隐私泄露**（会进入其日志与缓存），
+而且搜索结果对"提问质量"没有帮助 —— 本产品需要的是提问范式，不是网页事实。
+工程上强制：`app/kb/` 下的搜索客户端**不从 `SessionState` 取任何字段**，
+只接受 CLI 参数与配置文件输入；此约束需有测试用例覆盖。
+
+**密钥治理 — MUST：**
+
+- **用户在对话中提供的 key 已视为泄露，正式部署前必须全部轮换。**
+  本文档只描述变量名，不落任何真实 key。
+- `.env` 必须在 `.gitignore` 中（需确认覆盖 `.env`、`.env.*`、`*.key`）；
+  `.env.example` 只写变量名与说明，**不写真实值**。
+- OpenAlex 配额：**10000 credits/日，每请求固定扣 10 credits ≈ 1000 请求/日**。
+  知识库构建脚本必须**带本地缓存与断点续跑**，避免重跑耗尽当日配额（见 §7.7）。
+- 所有外部调用走 `httpx.AsyncClient` 且**必须设超时**；
+  搜索类调用失败不得阻断任何主流程（它们本就只在离线管线中）。
 
 ---
 
@@ -227,7 +417,40 @@ class Consent(BaseModel):
 - 与供应商签署 DPA（数据处理协议）；隐私政策中**明示**使用了第三方模型服务及其地域。
 - 若合规要求数据不出境 → 走**自托管开源模型**路径（架构上由 2.1 Provider 抽象层支持，
   切换只需新增 adapter）。**这是 Provider 抽象层的核心价值之一，不是可选优化。**
-- 送往模型前对可识别 PII 做脱敏（见 3.5），减少出境敏感信息。
+- 送往模型前对可识别 PII 做脱敏（见 §3.5），减少出境敏感信息。
+
+**本项目的具体情况（v3.0 补充）：**
+
+当前用户原话会流向**两家**供应商，而非一家 —— 这点容易被忽略：
+
+| 供应商 | 收到什么 | 上线前必须确认 |
+|---|---|---|
+| DeepSeek | 困惑描述、全部回答原文、摘要 | 是否默认用于训练、留存期、能否申请零留存 |
+| 智谱（embedding-3） | **被向量化的每一段用户表述原文** | 同上。嵌入调用同样是数据出境，常被误认为"只是算向量" |
+
+- **嵌入服务也是数据出境通道。** 只关注 LLM 而忽略 embedding 是常见疏漏：
+  为了做跨会话检索，用户的历史表述会被逐条送去向量化，累积暴露量甚至超过单次对话。
+- **本地嵌入是隐私上明显更优的选择**：BGE-M3 本地推理让"用户历史"这一最敏感的数据
+  完全不出本机。若硬件允许，建议**生产环境用本地 BGE-M3 做 `user` scope 向量化，
+  云端 embedding-3 只用于 `kb` scope（公共知识库，无隐私问题）**。
+  这是一个**按 scope 分流 provider** 的设计，`EmbeddingProvider` 抽象需支持按 scope 选择实现。
+- 两家的条款都需在隐私政策中明示，并纳入 §3.2 的 `policy_version`。
+
+### 3.3.1 按 scope 分流嵌入 provider — SHOULD（强烈建议）
+
+```yaml
+# config/task_models.yaml
+embeddings:
+  kb:    cloud_zhipu      # 公共知识库：用云端，省本地算力
+  user:  local_bge_m3     # 用户历史：留在本机，隐私最优
+```
+
+**约束**：两者**必须输出同一维度**（§2.6 的 1024 目标维度正是为此），
+否则 `kb` 与 `user` 的向量空间不可比。
+即使两个 scope 各自独立检索、从不跨库比较，同维仍是必要的 ——
+它保证切换任一侧时不必改表结构，也让降级（本地不可用时临时回落云端）成为可能。
+**降级回落云端必须记 `degraded` 并计入审计**（因为它改变了数据流向，是隐私相关事件，
+而非单纯的质量事件）。
 
 ### 3.4 危机识别与转介 — MUST
 
@@ -635,21 +858,28 @@ CREATE TABLE safety_audit (
 );
 -- 仅追加：撤销 UPDATE/DELETE 权限，单独角色可读
 
--- 向量块（pgvector 起步）
+-- 向量块元数据（P0-P3：向量存 Chroma，此表存元数据与来源，见 §2.6【决策 #18】）
 CREATE TABLE chunks (
-  chunk_id       UUID PRIMARY KEY,
-  scope          TEXT NOT NULL,              -- 'kb' | 'user'
-  owner_id       UUID,                       -- scope='user' 时必填，强制过滤
-  text           TEXT NOT NULL,
-  embedding      vector(1024),               -- 维度随模型，切换需重建
-  embed_model    TEXT NOT NULL,              -- 记录模型版本，见 7.2
-  metadata       JSONB NOT NULL,
-  tsv            tsvector,                   -- 中文需自定义分词，见 2.2
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  chunk_id          UUID PRIMARY KEY,
+  scope             TEXT NOT NULL,           -- 'kb' | 'user'
+  owner_id          UUID,                    -- scope='user' 时必填，强制过滤
+  text              TEXT NOT NULL,
+  embed_model       TEXT NOT NULL,           -- 见 §7.2：三字段任一变化即需全量重建
+  embed_dim         INT  NOT NULL,
+  projection_version TEXT,                   -- 降维方案版本（§2.6 方案 1）
+  vector_ref        TEXT NOT NULL,           -- Chroma collection + id
+  metadata          JSONB NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX ON chunks USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX ON chunks USING gin (tsv);
 CREATE INDEX ON chunks (scope, owner_id);
+CREATE INDEX ON chunks (embed_model, embed_dim);
+
+-- 迁 pgvector 时（Postgres 落地后再评估，非必须）追加：
+--   ALTER TABLE chunks ADD COLUMN embedding vector(1024);
+--   CREATE INDEX ON chunks USING hnsw (embedding vector_cosine_ops);
+--   CREATE INDEX ON chunks USING gin (tsv);
+-- 注意：HNSW/IVFFlat 索引上限 2000 维。
+--   1024 维可直接建索引；2048 维必须改用 halfvec（≤4000 维）或先降维，见 §2.6。
 ```
 
 **三处修正的原因：**
@@ -676,12 +906,34 @@ CREATE INDEX ON chunks (scope, owner_id);
 
 ### 6.2 结构化输出（对抗格式漂移）— MUST
 
-- 一律用 **function calling / structured output** 绑定 Pydantic schema。
-- 解析失败三级降级：
-  1. 直接解析 → 2. 容错修复（去 markdown 围栏、修尾逗号、截断补全）
-  → 3. 带错误信息重试一次（温度降 0）→ 仍失败抛 `StructuredOutputError`。
+【决策 #20】v2.0 写的"一律用 function calling"在多 provider 现实下站不住：
+DeepSeek 系与本地模型对 function calling 的支持程度不一致，
+推理型模型常不支持工具调用（也常忽略 `temperature`），
+而 minimind 级模型两者都不支持。**把 function calling 当唯一路径，换模型时整链失效。**
+
+**因此改为分层策略（按 provider 能力自动选择，见 §2.4.2）：**
+
+| 优先级 | 手段 | 启用条件 |
+|---|---|---|
+| 1 | `response_format={"type":"json_object"}`（JSON 模式） | `caps.supports_json_mode` |
+| 2 | function calling / tool schema | `caps.supports_function_calling`（探测确认后） |
+| 3 | 纯提示词约束 + 严格解析 | 兜底（仅 `TOY` 档开发场景） |
+
+**无论走哪条路，Pydantic 校验都是唯一裁判** ——
+provider 声称支持 JSON 模式不等于输出一定符合我们的 schema。
+
+**解析失败三级降级（保留 v2.0 设计）：**
+1. 直接解析 → 2. 容错修复（去 markdown 围栏、修尾逗号、补全被截断的括号）
+→ 3. 带错误信息重试一次（若 `supports_temperature` 则降到 0）
+→ 仍失败抛 `StructuredOutputError`。
+
 - **三次失败必须显式失败**，不允许猜测填充默认值继续跑。
   静默降级会产出"看起来正常但内容错误"的报告，比报错危险得多。
+- **`supports_temperature=False` 时不得传该参数**：部分推理型模型会直接报 400。
+  Gateway 必须按 caps 裁剪请求参数，而不是无条件全带上。
+- **JSON 模式下仍需在提示词里给出 schema 与示例**：
+  JSON 模式只保证"是合法 JSON"，不保证"是你要的那个 JSON"。
+- 输出被截断是结构化失败的最常见原因，见 §6.5 的输出预算约束。
 
 ### 6.3 上下文预算与截断策略 — MUST
 
@@ -703,7 +955,12 @@ CREATE INDEX ON chunks (scope, owner_id);
 
 - 每次 LLM 调用前 `ContextBudgeter.fit()` 精确计数并按优先级裁剪。
   **超预算时先砍检索片段 → 再砍中期摘要 → 永不砍系统指令与安全约束。**
-- token 计数**必须用目标模型自己的 tokenizer**（中文偏差大，见 2.2）。
+- token 计数**必须用目标模型自己的 tokenizer**（中文偏差大，见 §2.2）。
+  **现实约束（v3.0）**：`tiktoken` 只覆盖 OpenAI 系模型，**对 DeepSeek 与本地模型并不精确**。
+  策略：优先用 provider 官方 tokenizer；不可得时用 `tiktoken` 的 `cl100k_base` 做**保守估算**
+  并乘安全系数（中文建议 1.15-1.25），宁可低估可用预算也不要超限。
+  `ProviderCaps.tokenizer_hint` 用于选择计数实现；
+  **估算模式必须在日志与 trace 中标记**，否则截断问题无法归因。
 - 摘要器输出必须含 `preserved_quotes` 字段，且压缩后金句仍可被 Evidence 校验命中。
 - 结构化摘要支持**选择性加载**：Analyst 需全维度，Interviewer 只需相邻维度。
 - 截断事件必须记指标（`context_truncation_total`），持续触发说明预算配置有问题。
@@ -733,6 +990,43 @@ CREATE INDEX ON chunks (scope, owner_id);
   两个原因：会把探索工具包装成诊断权威；模型极易编造书名与页码。
   如需引用，只能引用**知识库中真实存在的条目 id**，并同样走 Evidence 式校验。
 
+### 6.5 输出长度预算与报告分段生成 — MUST（v3.0 新增）
+
+【决策 #21】实际配置 `LLM_MAX_TOKENS=4096`。这个值对本产品的影响是结构性的：
+
+- 若目标模型是**推理型**，思维链会占用输出额度，留给 JSON 正文的可能远少于 4096。
+- `InsightReport` 是深层嵌套结构（多条 `Insight` × 多条 `Evidence` 原文引用 + 建议 + 不确定性说明），
+  中文原话引用尤其占 token。**一次生成整份报告极易触顶。**
+- 输出截断发生在 JSON 中间 → 直接解析失败 → 触发重试 → **再次截断**。
+  这会变成稳定失败而非偶发失败，重试链救不回来。
+
+**因此报告必须分段生成：**
+
+```
+Analyze 阶段拆为三次调用（各自独立 schema、独立 Evidence 校验）：
+  1. underlying_needs   (潜意识诉求)
+  2. inner_conflicts    (内在冲突)
+  3. suggestions        (建议，输入含前两步已确认的 insights)
+最后由代码组装成 InsightReport，uncertainty_notes 由各段合并
+```
+
+**要点：**
+
+- 分段让每次输出远离上限，也让**部分失败可局部重试**（诉求成功、冲突失败只重做冲突段）。
+- 建议段以**前两段已通过 Evidence 校验的结论**为输入，保证 `linked_insights` 指向真实存在的洞察。
+- 分段后必须校验 `Suggestion.linked_insights` 的索引有效性（代码校验，非模型自觉）。
+- 若某段最终失败：**报告仍然出，但该段留空并在 `uncertainty_notes` 明确写出缺失原因**，
+  同时置 `degraded=true`。
+  这比整份报告失败更好，也比悄悄少一段危险得多（§9.5）。
+- 同理，**Planner 一次规划 10 个 slot 也接近输出上限**：
+  `ONE_SHOT` 模式下若 10 问一次生成失败，允许拆成两批各 5 问（维度约束仍全局校验）。
+
+**通用约束 — MUST**：
+`ContextBudgeter` 必须同时约束**输入预算**与**输出预留**：
+`max_output_tokens = min(caps.max_output_tokens, 配置上限)`，
+且输入预算裁剪后要为输出留足空间（§6.3 的 10% 输出预留在 4096 上限下需按绝对值重算，
+而非按比例——比例分配在小上限时会失效）。
+
 ---
 
 ## 7. RAG 设计
@@ -755,22 +1049,33 @@ CREATE INDEX ON chunks (scope, owner_id);
 - **分块策略**：技术库按「一个技术 + 一个示例」为一块（语义完整）。
   **不用固定长度切分** —— 提问范式被切断就失去参考价值。
 - 元数据必须含 `source_type`、`created_at`、`asserted_at`、`dimension`、`technique`。
-- **Embedding 版本管理（两版都缺）**：
-  `chunks.embed_model` 记录生成该向量的模型版本。
-  换 embedding 模型 → **必须全量重建索引**，且新旧向量**绝不可混用**
-  （不同模型的向量空间不可比，混用会让检索静默失效——这是最难发现的一类故障）。
-  重建流程：双写新 collection → 校验指标不降 → 切流 → 下线旧索引。
+- **Embedding 版本管理（v3.0 强化）**：
+  记录三个字段而非一个：`embed_model`、`embed_dim`、`projection_version`。
+  **任一变化都要求全量重建索引**，新旧向量**绝不可混用**
+  （不同模型/维度/投影的向量空间不可比，混用让检索静默失效——最难发现的一类故障）。
+  重建流程：双写新 collection → 在 §7.5 评估集上校验指标不降 → 切流 → 下线旧索引。
+  Chroma 按 collection 名带上版本（如 `kb_zhipu1024_v1`），
+  这样重建是"建新 collection"而非"改旧 collection"，回滚只需切配置。
+- **按 scope 分流 provider（见 §3.3.1）**：
+  `kb` 用云端 embedding、`user` 用本地 BGE-M3 是隐私最优组合。
+  **两侧必须同维**，且各自独立记录上述三字段 ——
+  `kb` 换模型不应触发 `user` 侧重建，反之亦然。
 
 ### 7.3 混合检索与多路召回 — MUST
 
 【吸收 DeepSeek 的多路召回】
 
 ```
-                    ┌→ 向量检索(BGE-M3) top50 ─┐
-Query 改写(HyDE/多查询)                        ├→ RRF 融合 → Reranker → top5
-                    └→ BM25(中文分词) top50  ──┘
-                    (可选)第二 embedding 模型 top50
+                      ┌→ 向量检索 top50 ─────────┐
+Query 改写(HyDE/多查询)                          ├→ RRF 融合 → Reranker(本地) → top5
+                      └→ BM25(jieba 分词) top50 ─┘
+                      (可选)第二 embedding 模型 top50
 ```
+
+**本项目的具体形态：**
+向量侧 = 智谱 `embedding-3` 或本地 BGE-M3（按 scope 分流，§3.3.1）；
+BM25 侧 = `rank-bm25` + `jieba`，**进程内**构建（数据量级千级块，无需 ES）；
+Reranker = 本地 `bge-reranker-v2-m3`（无云端 rerank API 可用，见 §7.4）。
 
 - 向量检索在"用户口语化表述"上召回差，**必须配 BM25 补关键词匹配**。
 - 融合用 **RRF（倒数排名融合）**：只依赖排名不依赖分数，
@@ -815,6 +1120,19 @@ RAG 落地最常见的坑。**核心原则：分数绝对值不可信，用"分�
    `Reranker → RRF 排名 → 纯向量 top-k → 无检索`
    任一环节超时（>800ms）或异常自动降级并记录。
    **降级是常态而非异常**，指标里必须能看到降级率。
+
+7. **本项目的 Reranker 现实约束（v3.0）**
+   当前**没有可用的云端 rerank API**，Reranker 只能本地跑。这带来三个后果：
+   - **必须在 executor / 独立进程中执行**：cross-encoder 推理是 CPU/GPU 密集，
+     直接在事件循环里跑会卡死整个 worker（§9.1 的典型陷阱）。
+   - **模型未加载或加载失败时，降级到 RRF 排名是正常路径**，不是错误。
+     首次加载耗时较长，应在启动预热而非首个请求时加载。
+   - **P3 之前完全可以不做 Reranker**：先跑 §7.5-A 的消融实验，
+     若 RRF 与 RRF+Rerank 的 Recall 差距 < 2%，直接砍掉（决策见 §7.5）。
+     本产品知识库规模小、候选集质量高，Reranker 的边际收益很可能不值它的延迟与部署成本。
+
+8. **LLM 终审用 `FAST` 档**（§2.4）：这是低难度打分任务，不需要 `STRONG`。
+   用强档跑终审是成本浪费；用 `TOY` 档跑则毫无意义（打分不可信）。
 
 【生成指令】实现 `app/rag/retriever.py`、`fusion.py`、`reranker.py`、`calibration.py`。
 Reranker 封装在带超时与降级链的 wrapper 内。
@@ -861,6 +1179,81 @@ Reranker 封装在带超时与降级链的 wrapper 内。
 【生成指令】评估代码放 `eval/`（与 `app/` 同级），
 提供 `eval/run.py` 一键跑全部评估并输出对比报告（markdown + json）。
 数据放 `eval/datasets/*.jsonl`，纳入版本控制。
+
+### 7.7 知识库构建管线（v3.0 新增）— SHOULD
+
+用户可用的 Bocha / Tavily / OpenAlex 在本产品里有一个**明确且有限**的位置：
+**离线构建提问技术库**。它们不参与任何在线请求路径。
+
+#### 7.7.1 铁律：完全离线，不接触用户数据
+
+【决策 #22】
+
+- 管线是**独立 CLI**（`app/kb/build.py`），手动或定时运行，**不由 API 请求触发**。
+- 搜索客户端**不得从 `SessionState` 读取任何字段**，只接受 CLI 参数与配置文件。
+  **此约束需有测试用例**：注入一个假 `SessionState` 并断言搜索模块无法访问它。
+- 产出物是**版本化的知识库文件**（`data/kb/techniques_v*.jsonl`），
+  经**人工/专家审核**后才入向量库（§3.8）。
+  **不允许"抓取即入库"** —— 未经审核的网络内容进提问技术库，
+  等于让互联网决定系统怎么问用户问题。
+
+#### 7.7.2 三个数据源的分工
+
+| 源 | 用途 | 检索什么 | 不做什么 |
+|---|---|---|---|
+| **OpenAlex** | 提供**真实可核验的学术出处** | 焦点解决短期治疗、苏格拉底式提问、动机式访谈等的论文元数据（`doi`、标题、年份、摘要） | 不下载全文；不用摘要生成"诊断标准" |
+| **Bocha** | 中文网检索 | 中文咨询实务中的提问范式表述、本地化措辞 | 不采集个案故事（隐私与版权） |
+| **Tavily** | 国际网检索 | 英文提问技术清单、公开培训材料 | 同上 |
+
+**OpenAlex 配额纪律（决策 #23）**：
+10000 credits/日、每请求固定 10 credits ≈ **1000 请求/日**。
+因此：**必须本地缓存响应**（按查询 hash 存盘）、**支持断点续跑**、
+**每请求固定扣费与页大小无关 → 尽量用大页而非多次小页请求**。
+配额耗尽时脚本应优雅退出并提示明日续跑，而不是不断重试。
+
+#### 7.7.3 产出物的 schema（入库前必须满足）
+
+```python
+class TechniqueEntry(BaseModel):
+    technique: Technique              # 必须映射到 §1.3 的枚举，不允许自由新增
+    dimension: list[Dimension]        # 适用维度
+    prompt_pattern: str               # 提问范式模板（中文）
+    example: str                      # 一个具体示例
+    applicable_when: str              # 适用条件
+    contraindication: str | None      # 禁用条件（如高风险状态下不宜使用）
+    sources: list[Source]             # 至少一条，见下
+    reviewed_by: str                  # 审核人标识，未审核不得入库
+    reviewed_at: datetime
+
+class Source(BaseModel):
+    kind: Literal["openalex", "web", "book"]
+    ref: str                          # doi / work_id / URL
+    title: str
+    year: int | None
+```
+
+**`sources` 与 `reviewed_by` 是硬性非空** —— 这是决策 #23 的落地点：
+§6.4 禁止模型编造文献，而正面的解法是**让引用只能来自库内真实记录**。
+`Source.ref` 必须可程序化核验（doi 能解析、URL 能访问），
+校验脚本 `app/kb/verify.py` 在入库前跑一遍。
+
+**`contraindication` 字段值得单独说明**：某些提问技术在高风险状态下不宜使用
+（例如对处于危机中的用户使用尖锐的代价问句）。
+把禁用条件结构化，Planner 才能在 `risk_level >= medium` 时**程序化过滤**掉这些技术，
+而不是依赖提示词里的一句叮嘱。这是 §3.4 处置矩阵在 RAG 侧的延伸。
+
+#### 7.7.4 与决策 #6 的一致性
+
+§6.4 决策 #6 禁止"引用文献给用户下结论"。本管线**不违反**该决策，因为：
+知识库存的是**怎么问**（提问范式），不是**用户是什么**（诊断标准）。
+`sources` 用于**内部可追溯与专家审核**，
+**默认不展示给用户**；即便展示也只以"参考框架"形式，绝不作为对用户状态的判断依据。
+
+【生成指令】`app/kb/` 下实现 `build.py`（CLI）、`sources/openalex.py`、`sources/bocha.py`、
+`sources/tavily.py`、`verify.py`、`ingest.py`。
+所有源客户端必须带本地缓存、超时、配额计数。
+**`app/kb/` 不得 import `app/graph/`、`app/agents/`、`app/schemas/session*`** ——
+用导入方向约束保证它无法接触会话数据（可用 lint 规则或架构测试强制）。
 
 ---
 
@@ -950,7 +1343,12 @@ DeepSeek 提的"时间衰减 + 新信息权重更高"方向对，但**"更新画
 集中封装 `app/llm/gateway.py`，**业务代码禁止直接调 SDK**。Gateway 负责：
 
 1. **超时分级**（不同任务用同一超时值是常见错误）：
-   安全分类 3s / 质量评估 5s / 生成问题 15s / 摘要 20s / 分析报告 60s。
+   安全分类 3s / 质量评估 5s / 生成问题 15s / 摘要 20s / 报告分段 60s。
+   **与 `LLM_TIMEOUT_SECONDS=180` 的关系**：180s 是 **HTTP 客户端的外层上限**
+   （给推理型模型留足余量），上述值是**每任务的内层截止时间**，由 Gateway 强制。
+   两者不是重复配置：外层防连接悬挂，内层防单个任务拖垮整体节奏。
+   **若目标模型是推理型**（输出前有较长思维链），
+   快档任务的内层值需按 §17 探测得到的实测 P95 上调，**不要照抄本表**。
 2. **选择性重试**：指数退避 + 抖动（`base=1s, factor=2, jitter=±30%, max=3`）。
    仅对 429/5xx/超时/连接错误重试；
    **4xx 参数错误与内容策略拒绝不重试**（重试必然再失败，纯浪费配额与时间）。
@@ -958,12 +1356,28 @@ DeepSeek 提的"时间衰减 + 新信息权重更高"方向对，但**"更新画
    避免下游故障时请求堆积拖垮自己。
 4. **降级链**：`主模型 → 备用模型 → 备用供应商 → 模板/缓存兜底`。
    【关键】降级必须**用户可感知**（"当前使用简化模式"），不可静默降低质量。
+   **本项目的现实缺口（决策 #24）**：当前只有 DeepSeek 一家对话供应商，
+   "备用供应商"这一环**是空的** —— 单厂故障即全站不可用。
+   补齐方案按优先级：
+   ① 智谱同一 key 若可调对话模型（GLM 系），作为**首选兜底**（已有凭据，接入成本最低，需实测确认）；
+   ② 本地 Ollama 托管的 7B 指令模型作 `FAST` 档兜底（`STRONG` 任务仍无法兜底，只能排队等恢复）；
+   ③ 再接一家云厂商。
+   **在兜底补齐之前，`STRONG` 任务的降级链末端只能是"明确失败 + 保留会话状态待恢复"** ——
+   不允许用 `FAST` 或 `TOY` 档顶替 `STRONG` 任务（§2.4.3 第 3 条），
+   宁可让用户稍后继续（会话可续跑，§4.2），也不给出劣质的心理分析。
 5. **限流适配**：本地令牌桶按 **RPM 与 TPM 双维度**预先削峰，
    而非等供应商返回 429 再退避。
 6. **并发闸门**：全局 semaphore 限制在途请求数（吸收 DeepSeek 的"每模型最大并发"），
    防突发流量打爆配额。
 7. **成本计量**：每次调用记录 prompt/completion tokens 与预估成本，按 session 与 user 聚合，
-   支持**单会话成本上限熔断**与**单用户日配额**（防恶意刷量，见 3.7）。
+   支持**单会话成本上限熔断**与**单用户日配额**（防恶意刷量，见 §3.7）。
+8. **参数按能力裁剪**：`supports_temperature=False` 时不传 `temperature`；
+   不支持 `response_format` 时不传该字段。
+   **无条件全带参数会在换模型时收到 400**，而 400 不可重试（第 2 条），直接失败。
+9. **嵌入服务的可靠性同等对待**：`EmbeddingProvider` 也要有超时、重试、熔断与降级。
+   嵌入失败的降级路径是**跳过向量检索走 BM25**，而不是让整个请求失败 ——
+   检索是增强项，不是必需项（§7.4 的"无检索"是合法路径）。
+   `EMBED_BATCH_SIZE=32` 需在批量索引时遵守；**在线单条查询不要走批量接口**。
 
 ### 9.3 关键设计：安全层不依赖 LLM 可用性 — MUST
 
@@ -975,6 +1389,16 @@ DeepSeek 提的"时间衰减 + 新信息权重更高"方向对，但**"更新画
 
 这条是两版文档里最容易被"降级到备用模型就行"的思路掩盖的：
 备用模型也可能同时不可用（同供应商故障），而安全不能有单点依赖。
+
+**v3.0 补充：本项目当前的单点风险是真实存在的。**
+只有一家对话供应商（决策 #24），意味着"LLM 全挂"不是理论场景。因此：
+
+- **规则层词表必须能独立完成危机拦截**，这是 §3.4 第一层存在的全部理由。
+- 向量库 / 嵌入服务不可用时，安全判定**不受影响**（安全不依赖检索）。
+  这要求 Safety 节点**不得**把检索结果作为判级输入 —— 保持它的输入只有用户最新输入。
+- 本地 `FAST` 档模型（若已部署）可作为安全分类器的兜底，
+  这是**本地模型在本项目中唯一真正有价值的生产用途**：
+  它不追求质量最优，而是追求**在云端不可用时安全能力不为零**。
 
 ### 9.4 延迟优化 — SHOULD
 
@@ -1121,6 +1545,11 @@ event: done         data: {"phase":"done"}
 | 混沌 | 故障注入 | LLM 超时/429/非法 JSON、向量库不可用、Redis 宕机、Reranker 超时、**供应商全挂** |
 | 红队 | 对抗 | 提示词注入、危机词中文变体、诱导越界建议、诱导医疗诊断、诱导暴露他人隐私 |
 | 负载 | 并发 | 同会话并发提交、突发流量、长会话上下文压测 |
+| **能力门控** | Provider 能力矩阵 | `TOY` 档被拒绝承担 `STRONG` 任务；缺 `json_mode` 被拒；参数按 caps 裁剪（§2.4.3） |
+| **档位冒烟** | 三档运行 | `local` 档全流程跑通（CI 必跑，用 minimind/Ollama，零云端成本）；`cloud`/`hybrid` 按需 |
+| **架构隔离** | 导入方向 | `app/kb/` 不得 import 会话相关模块；注入假 `SessionState` 断言搜索模块无法访问（§7.7.1） |
+| **维度一致性** | 向量库 | collection 维度与 `EMBED_TARGET_DIM` 不符时启动失败；换模型后拒绝混用（§7.2） |
+| **输出截断** | 报告分段 | 模拟输出触顶，验证分段生成与局部重试；验证某段失败时报告仍出且 `degraded=true`（§6.5） |
 
 **四条硬要求：**
 
@@ -1131,6 +1560,11 @@ event: done         data: {"phase":"done"}
 3. **级联删除必须有测试**：向量库残留是最常见的"假删除"合规缺陷。
 4. CI 门禁：单元 + 契约 + 集成 + ruff + mypy strict 全绿；
    评估测试按需/定时触发（因需真实 LLM 调用）。
+5. **`local` 档冒烟进 CI**：这是 minimind 在本项目最有价值的用途（§2.5）——
+   它让"provider adapter / 流式 / 超时 / 重试链路真的通"这件事**每次提交都被验证**，
+   且完全离线免费。**但断言只针对流程与 schema，不针对内容质量。**
+6. **不要用 FakeLLM 替代能力门控测试**：FakeLLM 可以声明任意 caps，
+   因此必须单独测"caps 不足时 Gateway 确实拒绝"，而不是测"FakeLLM 返回了正确结果"。
 
 ---
 
@@ -1147,8 +1581,12 @@ app/
   agents/                planner / interviewer / safety / analyst / critic
   domain/                technique.py / dimension.py / mode.py（纯逻辑，零依赖）
   schemas/               Pydantic 模型
-  llm/                   gateway.py / providers/ / retry.py / breaker.py / budget.py
-  rag/                   retriever / fusion / reranker / calibration / indexer
+  llm/                   gateway.py / retry.py / breaker.py / budget.py / capability.py
+    providers/           openai_compat.py（DeepSeek 与本地共用）/ local_minimind.py / fake.py
+  embeddings/            provider.py（按 scope 分流，§3.3.1）/ zhipu.py / local_bge.py / projection.py
+  rag/                   retriever / fusion / reranker / calibration / indexer / vector_store.py
+  kb/                    build.py（离线 CLI）/ sources/ / verify.py / ingest.py —— 见 §7.7
+                         禁止 import graph/agents/session（架构测试强制）
   memory/                store / conflict / retrieval
   context/               budgeter / summarizer
   safety/                lexicon / classifier / policy / pii / output_guard / injection
@@ -1169,15 +1607,121 @@ docs/                    本文档 + ADR
 - 启动时校验必需配置，缺失**快速失败**（不允许带空 API key 启动后运行时才炸）。
 - 环境分离 `dev/staging/prod`：模型档位、日志级别、锐度上限、留存期按环境配置。
 - **Feature Flag**（两版都缺）：`human_handoff`（转人工）、`sharp_mode`、
-  `cross_session_recall`、`multi_route_recall`、`llm_final_judge`。
+  `cross_session_recall`、`multi_route_recall`、`llm_final_judge`、
+  `local_embeddings`、`reranker_enabled`。
   高风险能力必须可**一键关闭**而不需发版——出问题时这是唯一的快速止血手段。
+
+### 13.2.1 三档运行档位（v3.0 新增）— MUST
+
+用户要求"尽可能多用本地模型且可切换"。把这件事做成**三个预设档位**，
+而不是十几个互相牵连的开关 —— 单个开关的组合空间太大，测不完也说不清。
+
+| 档位 | LLM | Embedding | Reranker | 适用场景 |
+|---|---|---|---|---|
+| `cloud` | DeepSeek 强/快档 | 智谱 `embedding-3`（两 scope 都用） | 本地或关闭 | 质量优先，起步默认 |
+| `hybrid`（**推荐生产**） | DeepSeek 强/快档 | `kb`=智谱、`user`=**本地 BGE-M3** | 本地 | **隐私最优的可行组合**：最敏感的用户历史不出本机（§3.3.1） |
+| `local` | 本地 Ollama 指令模型（`FAST`）+ minimind（`TOY`） | 本地 BGE-M3 | 本地 | 离线开发 / CI / 数据不出境的合规场景 |
+
+**关键约束：**
+
+- `local` 档下**没有 `STRONG` 能力**（消费级硬件难以满足长上下文 + 强指令遵循）。
+  因此该档**只允许用于开发、CI、演示**；
+  若要在生产用 `local`，必须先在 §7.5 评估集上量化质量下降，
+  并明确告知用户"当前为本地模式，分析深度受限"（§9.5 的 `degraded` 语义）。
+- 切换档位**只改配置**，不改代码。
+  **切换 embedding 档位必须触发索引重建**（§7.2），启动时按 `embed_model + embed_dim`
+  校验 collection 一致性，**不一致就快速失败**，不允许混用。
+- 每个档位都必须有一条 CI 冒烟用例（至少跑通 `local` 档全流程）。
+
+### 13.2.2 环境变量清单 — MUST
+
+`.env.example` 必须列全以下变量（**只写变量名与说明，不写真实值**，§2.7）：
+
+```bash
+# ---- 运行档位 ----
+RUNTIME_PROFILE=cloud            # cloud | hybrid | local
+
+# ---- LLM（OpenAI 兼容协议；DeepSeek 与本地模型共用同一 adapter）----
+LLM_API_KEY=
+LLM_BASE_URL=                    # 如 https://api.deepseek.com/v1
+LLM_MODEL_STRONG=                # 强档模型标识（Planner/Interviewer/Analyst/Critic）
+LLM_MODEL_FAST=                  # 快档模型标识（Safety/Quality/Summary）
+LLM_TEMPERATURE=0.3              # 分析阶段应更低，见 §6.4；provider 不支持时自动省略
+LLM_MAX_TOKENS=4096              # 输出上限，驱动 §6.5 的报告分段
+LLM_TIMEOUT_SECONDS=180          # HTTP 外层上限；任务内层截止见 §9.2
+
+# ---- 备用供应商（决策 #24，兜底，缺失时降级链末端为显式失败）----
+LLM_FALLBACK_BASE_URL=
+LLM_FALLBACK_API_KEY=
+LLM_FALLBACK_MODEL=
+
+# ---- 本地 LLM ----
+LOCAL_LLM_BASE_URL=              # Ollama/vLLM/minimind serve 的 OpenAI 兼容地址
+LOCAL_LLM_MODEL=
+LOCAL_LLM_TIER=toy               # toy | fast —— 绝不允许填 strong（§2.4.3）
+
+# ---- Embedding（云）----
+EMBED_API_KEY=
+EMBED_BASE_URL=
+EMBEDDING_MODEL=
+EMBED_DIM_NATIVE=2048            # 供应商原生维度（实测值）
+EMBED_TARGET_DIM=1024            # 目标统一维度，见 §2.6【决策 #19】
+EMBED_BATCH_SIZE=32
+
+# ---- Embedding（本地）----
+LOCAL_EMBED_MODEL=BAAI/bge-m3    # 原生 1024 维
+LOCAL_EMBED_DEVICE=cpu           # cpu | cuda
+
+# ---- Reranker（仅本地）----
+RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RERANKER_ENABLED=false           # 先做 §7.5 消融再决定是否开启
+RERANKER_TIMEOUT_MS=800
+
+# ---- 向量库 ----
+VECTOR_BACKEND=chroma            # chroma | pgvector
+CHROMA_PERSIST_DIR=./data/chroma
+CHROMA_COLLECTION_KB=            # 名称须含模型与维度版本，如 kb_zhipu1024_v1
+CHROMA_COLLECTION_USER_PREFIX=
+
+# ---- 存储 ----
+DATABASE_URL=                    # 开发可 sqlite+aiosqlite，生产 postgresql+asyncpg
+REDIS_URL=
+
+# ---- 知识库构建（离线 CLI 专用，绝不接触用户数据，§7.7）----
+BOCHA_API_KEY=
+TAVILY_API_KEY=
+OPENALEX_BASE=https://api.openalex.org
+OPENALEX_API_KEY=
+OPENALEX_DAILY_CREDITS=10000     # 每请求扣 10 → 约 1000 请求/日
+KB_CACHE_DIR=./data/kb_cache
+
+# ---- 安全与合规 ----
+POLICY_VERSION=                  # 见 §3.2 同意版本化
+CRISIS_RESOURCES_FILE=config/crisis_resources.yaml
+SESSION_RETENTION_DAYS=90
+
+# ---- 可观测 ----
+SENTRY_DSN=                      # 必须配 before_send 脱敏，见 §11.1
+OTEL_EXPORTER_OTLP_ENDPOINT=
+LOG_LEVEL=INFO
+DEBUG_LOG_RAW_TEXT=false         # 记录用户原话，仅调试且需授权，见 §11.1
+```
+
+**启动自检 — MUST**（缺一项就 fail fast，不允许"先跑起来再说"）：
+
+1. 必需变量非空；`RUNTIME_PROFILE` 合法。
+2. `LOCAL_LLM_TIER != strong`（硬断言）。
+3. `EMBED_TARGET_DIM` 与向量库 collection 实际维度一致（§2.6 的 `dim` 属性）。
+4. `VECTOR_BACKEND=pgvector` 且 `EMBED_TARGET_DIM > 2000` → **直接报错**并提示 §2.6。
+5. `crisis_resources.yaml` 存在且可解析、条目非空 ——
+   **危机资源缺失时不允许启动**，这比任何功能都优先（§3.4）。
 
 ### 13.3 演进路径（每阶段可独立交付）
 
 | 阶段 | 目标 | 交付内容 |
 |---|---|---|
 | **P0 骨架** | 端到端跑通 10 问 | schemas + domain + **规则层安全** + Graph 状态机 + FakeLLM + CLI |
-| **P1 可用** | 真实 LLM | LLMGateway（超时/重试/降级）+ Provider 抽象 + Interviewer/Analyst + 报告 + SQLite |
+| **P1 可用** | 真实 LLM | LLMGateway（超时/重试/降级/**能力门控**）+ `OpenAICompatProvider`（DeepSeek）+ **JSON 模式结构化输出** + Interviewer/Analyst（**报告分段**）+ SQLite |
 | **P2 可靠** | 抗故障与并发 | 熔断 + 锁 + 幂等 + 上下文预算 + Critic + OutputGuard + API 契约 + 可观测 |
 | **P3 智能** | RAG 与记忆 | pgvector + 混合检索 + Reranker（低区分度处置）+ 四层记忆 + 冲突处理 |
 | **P4 质量** | 评估驱动 | 评估集 + 回归门禁 + 提示词 A/B + 校准 + 红队集 + 反馈闭环 |
@@ -1190,6 +1734,12 @@ docs/                    本文档 + ADR
 - **RAG 放 P3**：先把提问流程本身做好。
   过早引入 RAG 会掩盖提问设计的问题，且没有评估集时无法判断 RAG 是否真有帮助。
 - **知情同意与数据删除随 P1 一起上**（一旦开始存真实用户数据就必须具备）。
+- **能力门控随 P1 一起上**（§2.4.3）：P1 就要接真实 provider，
+  此时若无门控，后续任何模型切换都可能静默劣化，而且越晚补越难发现已被污染的输出。
+- **本地模型接入放 P1 末尾**：先用 DeepSeek 把链路跑通再加本地 adapter，
+  否则会把"模型能力不足"与"代码有 bug"两类问题混在一起排查。
+- **§17 探测清单在 P1 开始前跑一次**，把实测结果写进配置 ——
+  本文档所有"待实测"的地方都依赖它。
 
 ### 13.4 部署 — MUST
 
@@ -1228,6 +1778,31 @@ docs/                    本文档 + ADR
   `Question.text` 长度上限、上下文硬预算、单会话 token 熔断。
 - 每阶段都要记录实测成本；**P4 评估阶段必须产出"成本 vs 质量"曲线**，
   用于决定各环节用哪个档位的模型——这个决策不能靠猜。
+
+**v3.0 修订：报告分段改变了调用次数**
+
+§6.5 把报告拆成 3 段，Critic 相应也按段复核，因此：
+
+| 用途 | v2.0 估算 | v3.0 修订 | 档位 |
+|---|---|---|---|
+| 分析报告 | 1（长输出） | **3**（诉求/冲突/建议，各自更短） | `STRONG` |
+| Critic 复核 | 1-3 | **3-6**（按段复核 + 重做） | `STRONG` |
+| **合计** | ~40-50 | **~45-58** | 混合 |
+
+调用次数上升但**单次输出显著变短**，总 token 大致持平，
+而**结构化失败率明显下降** —— 这是用调用次数换可靠性，值得。
+
+**本地模型对成本的真实影响：**
+
+- `hybrid` 档把 `user` scope 的嵌入移到本地：
+  嵌入调用量随会话轮数线性增长（每条用户表述都要向量化），
+  移到本地省下的是**持续成本**，且顺带解决最敏感数据的出境问题（§3.3.1）。
+  这是三档里性价比最高的一步。
+- 把 `FAST` 档任务（安全/质量/摘要，约占调用次数一半）移到本地 7B 模型，
+  可再省一块云端成本，**但必须先通过 §17 探测确认 JSON 稳定性** ——
+  一个不稳定的本地模型会把省下的钱以"重试 + 解析失败"的形式还回去，甚至更多。
+- **成本不是选本地的首要理由，隐私是**（§3.3.1）。
+  若只为省钱而牺牲 `STRONG` 档质量，等于牺牲产品的核心资产（§1.1）。
 
 ### 14.2 用户反馈闭环 — MUST
 
@@ -1283,6 +1858,20 @@ DeepSeek 提到"收集用户评分用于微调或调整 RAG 权重"，但没说�
 | 评估集用真实数据 | 合规风险 | 默认合成/专家案例；授权+脱敏方可纳入 | 7.6 |
 | 会话跨天恢复情绪错位 | 体验差 | PAUSED 重确认；超 14 天建议新会话 | 4.5 |
 | 过早微服务化 | 交付变慢 | 模块化单体 + 接口预留 + 明确拆分优先序 | 4.1 |
+| **弱模型顶替强档任务** | **输出静默劣化（最危险）** | 能力门控 + `TOY` 硬阻断 + 拒绝路由计指标 | 2.4 / 2.5 |
+| **2048 维无法建 pgvector 索引** | 检索退化为全表扫描 | 统一 1024 维 + Chroma 起步 + 启动维度自检 | 2.6 |
+| **换嵌入模型/维度后混用向量** | 检索静默失效 | 三字段记录 + collection 带版本名 + 启动校验 | 7.2 |
+| **输出触顶截断致 JSON 解析稳定失败** | 报告无法生成 | 报告分段生成 + 输出预算按绝对值算 + 局部重试 | 6.5 |
+| **function calling 不被支持** | 换模型即整链失效 | JSON 模式为主路径 + 按 caps 选择 + 参数裁剪 | 6.2 |
+| **单一对话供应商** | 单厂故障即全站不可用 | 补备用供应商；未补齐前 `STRONG` 降级末端为显式失败 | 9.2 |
+| **用户原话流向嵌入服务被忽视** | 隐私暴露量被低估 | 视嵌入为出境通道；`hybrid` 档 `user` scope 走本地 | 3.3 / 3.3.1 |
+| **用户原话流向搜索 API** | 不可逆隐私泄露 | 搜索仅离线用；导入方向约束 + 架构测试 | 7.7.1 |
+| **未审核网络内容进技术库** | 互联网决定怎么问用户 | `reviewed_by` 非空 + 专家审核 + `sources` 可核验 | 7.7.3 |
+| **tiktoken 对 DeepSeek 计数不准** | 预算失真致意外截断 | 官方 tokenizer 优先；估算模式加安全系数并标记 | 6.3 |
+| **OpenAlex 配额耗尽** | 知识库构建中断 | 本地缓存 + 断点续跑 + 大页请求 + 优雅退出 | 7.7.2 |
+| **危机资源文件缺失仍启动** | 危机时无资源可给 | 启动自检失败即拒绝启动 | 13.2.2 |
+| **对话中泄露的 key 未轮换** | 凭据被滥用 | 部署前全部轮换 + `.env` 入 gitignore | 2.7 |
+| **本地 reranker 阻塞事件循环** | 吞吐崩塌 | executor/独立进程 + 启动预热 + 超时降级 | 7.4 |
 
 ---
 
@@ -1290,18 +1879,23 @@ DeepSeek 提到"收集用户评分用于微调或调整 RAG 权重"，但没说�
 
 ### 16.1 生成顺序（每步产出可运行、可测试的增量）
 
+0. **先跑 §17 探测清单**，把实测能力写进 `config/providers.yaml` —— 后续所有步骤依赖它
 1. `app/schemas/` + `app/domain/` + 单测 —— **零 LLM 依赖，先立契约**
 2. `app/safety/lexicon.py` + `policy.py` + 红队用例 —— **安全先行**
-3. `app/llm/FakeLLM` + `app/graph/` 状态机 + 集成测试 —— **流程先跑通**
-4. `app/llm/gateway.py` + `providers/`（超时/重试/熔断/降级/计量）+ 故障注入测试
-5. `app/agents/` + `prompts/`（外置）+ 结构化输出 + `verify_evidence()`
-6. `app/context/`（预算与压缩）+ `app/safety/output_guard.py` + `injection.py`
-7. `app/storage/`（迁移 + repositories）+ 同意与删除流程
+3. `app/llm/providers/fake.py`（FakeLLM）+ `app/graph/` 状态机 + 集成测试 —— **流程先跑通**
+4. `app/llm/capability.py`（档位与门控）+ `gateway.py` + `providers/openai_compat.py`
+   （超时/重试/熔断/降级/计量/参数裁剪）+ 故障注入测试 —— **门控与 Gateway 同批交付**
+5. `app/agents/` + `prompts/`（外置）+ **JSON 模式结构化输出** + `verify_evidence()`
+   + **报告分段生成**（§6.5）
+6. `app/context/`（预算与压缩，含输出预留）+ `app/safety/output_guard.py` + `injection.py`
+7. `app/storage/`（迁移 + repositories）+ 同意与删除流程（含级联删除）
 8. `app/api/`（路由 + SSE + 错误码 + 锁/幂等/限流）
 9. `app/observability/` 全量接入 + Sentry 脱敏钩子
-10. `app/rag/` + `app/memory/`
-11. `app/tasks/`（报告异步 + 索引重建）+ `app/mcp_server/`
-12. `eval/` 评估集与回归门禁
+10. `app/embeddings/`（按 scope 分流 + 降维）+ `app/rag/`（含 `vector_store.py`）+ `app/memory/`
+11. `app/llm/providers/local_minimind.py` + `local` 档 CI 冒烟 —— **本地模型接入放在链路稳定之后**
+12. `app/kb/`（离线构建管线，§7.7）+ 专家审核流程
+13. `app/tasks/`（报告异步 + 索引重建）+ `app/mcp_server/`
+14. `eval/` 评估集与回归门禁 + **Reranker 消融决定是否保留它**
 
 ### 16.2 贯穿全程的硬约束（下游工具不得违反）
 
@@ -1318,6 +1912,20 @@ DeepSeek 提到"收集用户评分用于微调或调整 RAG 权重"，但没说�
 - 类型注解完整，通过 `mypy strict`；格式与 lint 用 `ruff`。
 - 删除操作必须级联到向量库与缓存，且有测试覆盖。
 
+**v3.0 新增硬约束（与多 provider / 本地模型直接相关）：**
+
+- **任务路由必须过能力门控**（§2.4.3）；`TOY` 档承担 `STRONG` 任务是**无条件断言失败**，
+  不读配置、不可覆盖。
+- **请求参数按 `ProviderCaps` 裁剪**：不支持的 `temperature` / `response_format` 一律不传。
+- **结构化输出以 JSON 模式为主路径**，function calling 仅在探测确认后启用（§6.2）。
+- **报告与规划分段生成**，禁止一次性生成整份 `InsightReport`（§6.5）。
+- **`app/kb/` 禁止 import 会话相关模块**（`graph`/`agents`/session schema），
+  用架构测试强制 —— 这是"搜索 API 绝不接触用户原话"的代码级保障（§7.7.1）。
+- **嵌入模型 / 维度 / 投影版本任一变化 → 全量重建索引**，禁止混用（§7.2）。
+- **启动自检不通过就不启动**（§13.2.2），尤其危机资源文件缺失。
+- **切换任何 provider 都不得修改业务代码**：只改 `config/` 与新增 adapter。
+- **不在文档、代码、注释中写入真实 API key**。
+
 ### 16.3 依赖清单
 
 **项目现有（与 IDE 配置一致，保留）：**
@@ -1328,40 +1936,144 @@ tavily-python, fastapi, uvicorn, pydantic, pydantic-settings, python-dotenv,
 requests, httpx, loguru, pytest, pytest-asyncio, mcp
 ```
 
-**必须补充：**
+**必须补充（P0-P3）：**
 ```
-tiktoken                    # token 精确计数（中文偏差，见 2.2）
+tiktoken                    # token 计数（对 DeepSeek 为估算，见 §6.3）
 tenacity                    # 重试策略
 redis[hiredis]              # 锁 / 幂等 / 限流 / 热态
 arq                         # 轻量异步任务队列（报告生成）
-asyncpg + sqlalchemy[asyncio] + alembic   # Postgres 异步与迁移
-pgvector                    # 向量扩展 Python 绑定
-rank-bm25                   # 关键词检索
-jieba                       # 中文分词（BM25 前置，必需）
-FlagEmbedding               # BGE-M3 embedding / bge-reranker 本地推理
-opentelemetry-sdk + opentelemetry-instrumentation-fastapi
+sqlalchemy[asyncio] + alembic             # ORM 与迁移
+aiosqlite                   # 开发期存储
+asyncpg                     # 生产 Postgres（P5，或提前接入）
+rank-bm25                   # 关键词检索（进程内）
+jieba                       # 中文分词（BM25 前置，必需，见 §2.2）
 prometheus-client           # 指标暴露
 sentry-sdk                  # 错误追踪（须配 before_send 脱敏）
+opentelemetry-sdk + opentelemetry-instrumentation-fastapi
 respx                       # httpx mock（测试）
 ruff, mypy                  # 质量门禁
+pyyaml                      # 配置（crisis_resources / task_models / providers）
 ```
+
+**本地模型相关（按需，`hybrid`/`local` 档才需要）：**
+```
+FlagEmbedding               # BGE-M3 嵌入 + bge-reranker 本地推理
+sentence-transformers       # FlagEmbedding 的替代/依赖路径
+torch                       # 上述二者的运行时（体积大，仅本地档安装）
+numpy                       # 降维投影（§2.6 方案 1）
+```
+
+> **依赖分组建议**：用 `pyproject.toml` 的 optional-dependencies 分组
+> （`[cloud]` / `[local]` / `[dev]`），
+> 让 `cloud` 档部署不必装 `torch` —— 否则镜像体积会膨胀数 GB
+> 而其中大部分代码永远不会执行。
 
 **演进期可选（不在 P0-P3 引入）：**
 ```
-qdrant-client               # 向量库规模化替换（>100 万块）
+pgvector                    # Python 绑定，迁 pgvector 时（注意 §2.6 维度上限）
+qdrant-client               # 规模化替换（>100 万块）
 langsmith 或 langfuse       # LLM 专项调试
 locust                      # 负载测试
 ```
 
+**已有但需重新定位：**
+- `chromadb` / `langchain-chroma`：**升级为 P0-P3 主向量库**（决策 #18），不再是过渡方案。
+- `openai`：作为 **OpenAI 兼容协议客户端**使用（DeepSeek 与本地模型共用），
+  不代表使用 OpenAI 服务。
+- `tavily-python`：**仅**用于 `app/kb/` 离线管线（§7.7），不进请求路径。
+- `langchain-openai`：可选；若 `LLMGateway` 直接用 `openai` SDK 则**不需要**，
+  少一层封装更利于精细控制超时与参数裁剪。
+
 **明确不引入：** `kafka` / `rabbitmq`（决策 #3）· `kubernetes` 客户端（P5 前）·
-Serverless 相关（决策 #12）· `chromadb` 在 P3 后可移除（改用 pgvector，决策 #4）。
+Serverless 相关（决策 #12）· 任何把 provider 细节泄露到业务层的高阶封装。
 
 ### 16.4 阅读顺序建议
 
 生成代码前，下游工具应按此顺序理解文档：
-**§0 决策表 → §3 安全 → §5 数据模型 → §4 架构 → §16 总纲 → 其余按需**。
+**§0 + §0.1 决策表 → §3 安全 → §2.4-2.7 模型与供应商约束 → §5 数据模型 → §4 架构
+→ §16 总纲 → 其余按需**。
 
-§0 与 §16.2 是**约束**，其余是**说明**。
+§0 / §0.1 / §16.2 是**约束**，其余是**说明**。
 若生成过程中发现约束与常见实践冲突，**以本文档约束为准**——
 每条约束背后都有本产品特定的理由（多数与安全或方法论完整性相关），
 不是疏忽或过时的写法。
+
+---
+
+## 17. 供应商能力探测清单（v3.0 新增）— MUST 在 P1 前执行
+
+本文档多处标注"待实测"。**这不是含糊，而是刻意**：
+模型标识与能力会变，把假设写死在文档里比留下探测步骤更危险。
+本节给出一次性探测脚本要回答的问题，**结果写入 `config/providers.yaml` 并纳入版本控制**。
+
+### 17.1 LLM 探测项
+
+| # | 探测项 | 方法 | 影响 |
+|---|---|---|---|
+| 1 | 可用模型标识 | `GET /models` 或最小 chat 请求 | 强/快档映射（§2.4） |
+| 2 | 实际上下文窗口 | 递增长度请求至报错 | `ContextBudgeter` 预算（§6.3） |
+| 3 | 实际输出上限 | 请求超长输出观察截断点 | **报告分段粒度（§6.5）** |
+| 4 | 是否支持 `response_format=json_object` | 带该参数请求 | **结构化输出主路径（§6.2）** |
+| 5 | 是否支持 function calling | 带 tools 请求 | 是否启用路径 2 |
+| 6 | 是否接受 `temperature` | 带该参数请求，看是否报错或被忽略 | **参数裁剪（§9.2 第 8 条）** |
+| 7 | 是否为推理型（输出前有思维链） | 观察响应结构与首 token 延迟 | 超时分级、输出预算 |
+| 8 | 流式是否可用 | `stream=True` | SSE 可行性（§10.2） |
+| 9 | 中文提问质量 | 跑 §7.5-C 提问质量评分集（10 例足够） | **档位判定（`STRONG` 与否）** |
+| 10 | JSON 稳定性 | 同一嵌套 schema 重复 20 次，统计解析成功率 | 若 < 95% 则不可承担 `STRONG` |
+| 11 | 实际计费与 token 计数 | 对比响应 `usage` 与本地估算 | 成本模型校准（§14.1） |
+| 12 | 限流阈值（RPM/TPM） | 递增并发观察 429 | 令牌桶配置（§9.2 第 5 条） |
+| 13 | 长文本延迟 P95 | 典型分析请求跑 20 次 | 超时内层值（§9.2 第 1 条） |
+
+**第 9、10 项是档位判定的决定性依据**，不能靠模型名猜。
+一个模型即使上下文很长，若 JSON 稳定性不足 95%，也不该承担 `STRONG` 任务 ——
+因为 §6.5 的分段生成会把它的不稳定性放大 3-6 倍。
+
+### 17.2 Embedding 探测项
+
+| # | 探测项 | 方法 | 影响 |
+|---|---|---|---|
+| 1 | 原生维度确认 | 单条请求看返回长度 | 确认 2048（用户已实测） |
+| 2 | **是否支持 `dimensions` 参数降维** | 带 `dimensions=1024` 请求 | **决定 §2.6 走方案 1 还是方案 2** |
+| 3 | 批量上限与 `EMBED_BATCH_SIZE` 匹配 | 递增批量至报错 | 索引构建吞吐 |
+| 4 | 长文本截断行为 | 超长输入观察是否报错或静默截断 | **静默截断需在分块时规避** |
+| 5 | 归一化状态 | 计算返回向量的模长 | 相似度计算方式（余弦/内积） |
+| 6 | 中文检索质量 | 跑 §7.5-A 检索评估集 | 与本地 BGE-M3 对比，决定 `hybrid` 分流 |
+| 7 | 限流与延迟 | 并发探测 | 在线查询可行性 |
+
+**第 2 项直接决定架构走向**：若支持 `dimensions=1024`，
+则 §2.6 方案 1 成立、pgvector 路线保留、云本地完全同维；
+若不支持，则要么自建降维投影（需验证 Recall 降幅 < 3%），要么锁定 Chroma + 2048 维。
+**这一项应最先探测。**
+
+**第 4 项容易被忽略但影响 Evidence 校验**：
+若嵌入服务静默截断超长输入，那么长回答的后半部分实际未被索引，
+而系统以为它已被索引 —— 跨会话检索会莫名其妙地漏掉内容。
+
+### 17.3 本地模型探测项
+
+对 minimind 与候选的 Ollama 模型各跑一遍：
+
+| # | 探测项 | 判定标准 |
+|---|---|---|
+| 1 | 是否提供 OpenAI 兼容端点 | 决定复用 adapter 还是写包装（§2.5） |
+| 2 | 上下文长度 | minimind 预期 512-1024，直接判定为 `TOY` |
+| 3 | 嵌套 JSON 生成成功率（20 次） | < 95% → 不得承担 `FAST`；< 50% → 仅 `TOY` |
+| 4 | 中文指令遵循（"只提问不给建议"） | 违规率 > 10% → 不得用于任何提问相关任务 |
+| 5 | 推理延迟 P95 | 超过快档超时值则不可用于在线路径 |
+| 6 | 并发能力 | 单实例并发数，决定是否需队列 |
+
+**探测结论必须落盘**（`config/providers.yaml` 的 `probed_at` 字段），
+并在 CI 中校验：**配置声明的 `tier` 与探测结论不符时构建失败** ——
+防止有人手改配置把 minimind 提到 `STRONG` 档。
+
+### 17.4 探测脚本要求
+
+【生成指令】实现 `scripts/probe_providers.py`：
+
+- 独立 CLI，读 `.env`，输出 `config/providers.yaml` + 人类可读的 markdown 报告。
+- **只用少量 token**（每项探测尽量单次小请求；第 9/10 项各 10-20 次，
+  这是必要开销，因为它决定档位）。
+- **可重复运行**：换模型或供应商后重跑，diff 配置即知能力变化。
+- 探测失败的项标 `unknown` 并**按最保守值处理**
+  （如 `supports_json_mode: unknown` → 视为 `false`），
+  绝不乐观假设 —— 乐观假设会在生产环境以解析失败的形式暴露。

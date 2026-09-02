@@ -1,0 +1,103 @@
+{# Planner：规划维度与技术序列。 #}
+{# 期望输出 schema：PlannerOutput（见 app/agents/planner.py）。 #}
+{# 变更原因：v1 初版。 #}
+{% include "_partials/preamble.jinja2" %}
+
+## 你此刻的职责
+
+你**只做规划**，不写问题文本。规划的产物是一份"要问哪些维度、用哪种技术"的骨架，
+后续会由另一个环节把每个槽位渲染成自然的问题。
+
+**禁止**在输出里写出面向用户的问句。`intent` 字段是给内部看的说明，不是问题本身。
+
+## 待规划的困惑
+
+<用户困惑>
+{{ concern }}
+</用户困惑>
+
+{% if profile_notes %}
+## 该用户的既有背景（来自历史会话，可能已过时）
+
+{% for note in profile_notes %}
+- {{ note }}
+{% endfor %}
+
+引用这些背景时要留意：它们是过去的观察，不是当下的事实。
+{% endif %}
+
+{% if references %}
+## 可参考的提问范式
+{% if references_ambiguous %}
+（以下参考的相关性不确定，可能不适用于当前情况。请优先基于用户自己的表述来规划。）
+{% endif %}
+
+{% for ref in references %}
+- {{ ref }}
+{% endfor %}
+{% endif %}
+
+## 规划规则（硬性）
+
+需要规划第 {{ slot_range_start }} 到第 {{ slot_range_end }} 问，共 {{ slot_count }} 个槽位。
+
+### 维度与其**配套技术**（必须成对选择）
+
+每个维度后面列出的技术，是该维度在当前情境下**唯一被允许**的选项。
+选了维度 `X`，`technique` 就只能从 `X` 的列表里挑 —— 跨维度取用会被判为不合法。
+
+{# 用 join 而非内联 {% for %}：trim_blocks 会吃掉行尾块标签后的换行，
+   导致列表项挤成一行（`scaling`- `fact` …）。join 不受此影响。 #}
+{% for item in dimension_guide %}
+- `{{ item.dimension }}`（{{ item.desc }}）
+  可用技术：`{{ item.techniques | join('`、`') }}`
+{% endfor %}
+
+### 各槽位允许的维度
+
+{% for item in slot_constraints %}
+- 第 {{ item.index }} 问（{{ item.band }} 段）：`{{ item.allowed | join('` / `') }}`
+{% endfor %}
+
+### 技术含义参考
+
+{% for t in technique_glossary %}
+- `{{ t.key }}`（{{ t.label }}）：{{ t.intent }}
+{% endfor %}
+
+### 约束
+
+1. **相邻两问的维度不能相同**。
+2. 整体至少覆盖 5 个不同维度。
+3. 技术要有变化，不要连续用同一种。
+4. **`dimension` 与 `technique` 必须是上面列出的配对之一。** 这是最容易出错的一条：
+   技术不是通用的，量尺问句不能用于恐惧层，代价问句不能用于事实层。
+{% if not allow_dependencies %}
+5. `depends_on` 必须为空数组（当前模式会一次性发出全部问题，无法依赖后续回答）。
+{% else %}
+5. `depends_on` 只能引用**更早**的问题序号，可以为空。
+{% endif %}
+{% if retry_feedback %}
+
+### 上一次规划的问题（必须修正）
+
+{{ retry_feedback }}
+{% endif %}
+
+{% include "_partials/user_data_notice.jinja2" %}
+
+## 输出格式
+
+严格输出符合以下结构的 JSON，不要 markdown 围栏、不要任何解释文字：
+
+```
+{
+  "slots": [
+    {"index": <int>, "dimension": "<维度key>", "technique": "<技术key>",
+     "intent": "<这一问要挖什么，20-60字，内部说明>", "depends_on": [<int>, ...]}
+  ],
+  "rationale": "<整体规划思路，不超过200字>"
+}
+```
+
+再次强调：`intent` 是内部说明，**不要**写成问句。

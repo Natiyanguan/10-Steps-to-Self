@@ -1,0 +1,83 @@
+{# Analyst 第 2 段：内在冲突。 #}
+{# 期望输出 schema：ConflictsSection（见 app/agents/analyst.py）。 #}
+{% include "_partials/preamble.jinja2" %}
+
+## 你此刻的职责
+
+识别对方身上**同时存在、彼此拉扯**的两种诉求或信念。
+
+这一段只做这一件事。不要重复上一段的深层诉求，不要给建议。
+
+## 完整问答记录
+
+<用户最初的困惑>
+{{ concern }}
+</用户最初的困惑>
+
+{% for qa in qa_pairs %}
+【第 {{ qa.index }} 问】
+问：{{ qa.question }}
+答：{{ qa.answer }}
+
+{% endfor %}
+
+{% if known_needs %}
+## 已识别的深层诉求（上一段的结论，供参考）
+
+{% for n in known_needs %}
+- {{ n }}
+{% endfor %}
+{% endif %}
+
+{% if memory_conflicts %}
+## 历史记录中的变化
+
+以下是对方在更早的会话里说过、与现在有出入的内容：
+{% for c in memory_conflicts %}
+- 曾经（{{ c.when }}）：{{ c.past }} ｜ 现在：{{ c.present }}
+{% endfor %}
+
+**这种变化本身就是最有价值的材料。** 它不是矛盾错误，而是真实的演化。
+{% endif %}
+
+## 什么是内在冲突
+
+好的例子：
+- "想要自由"与"想要稳定"同时存在，且都有原话支撑
+- 嘴上说不在意他人评价，但决策依据里反复出现别人的看法
+
+不是内在冲突的情况：
+- 单纯的犹豫不决（那只是还没想清楚）
+- 你推测出来但没有原话支撑的"潜意识矛盾"
+
+**看不出真正的冲突就返回空数组，并写进 `uncertainty_notes`。**
+硬凑一条冲突比不写更糟：它会让对方以为自己有问题。
+
+## 依据规则（与上一段相同，同样会被程序校验）
+
+`quote` 必须是原话中**逐字连续**的片段，从上面的"答："直接复制。
+找不到就会被丢弃。冲突类洞察最好给**两条**依据 —— 各自对应冲突的一侧。
+
+{% include "_partials/user_data_notice.jinja2" %}
+
+## 输出格式
+
+严格输出以下 JSON，不要 markdown 围栏：
+
+```
+{
+  "inner_conflicts": [
+    {
+      "statement": "<冲突的两侧是什么，一句话说清>",
+      "evidence": [
+        {"question_index": <int>, "quote": "<支撑一侧的原话>"},
+        {"question_index": <int>, "quote": "<支撑另一侧的原话>"}
+      ],
+      "confidence": "low" | "medium" | "high"
+    }
+  ],
+  "uncertainty_notes": ["<看不出来的部分>"]
+}
+```
+
+`inner_conflicts` 给 0-3 条。

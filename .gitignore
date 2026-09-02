@@ -1,2 +1,33 @@
 /.venv/
 .idea/
+
+# --- 密钥与本地配置（§2.7：绝不入仓）---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+config/providers.yaml
+
+# --- 本地数据 ---
+/data/
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- 模型权重（体积大，不入仓）---
+/models/
+*.gguf
+*.safetensors
