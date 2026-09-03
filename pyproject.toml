@@ -87,7 +87,7 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["yaml.*", "tiktoken.*", "langgraph.*", "jieba.*", "FlagEmbedding.*", "zhconv.*"]
+module = ["yaml.*", "tiktoken.*", "langgraph.*", "jieba.*", "FlagEmbedding.*", "zhconv.*", "sentry_sdk.*"]
 ignore_missing_imports = true
 
 [build-system]

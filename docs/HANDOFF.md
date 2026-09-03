@@ -4,7 +4,8 @@
 > 权威规范是 `docs/TECH_ROADMAP_FINAL.md`，本文只说**当前进展与下一步**。  
 > 文中所有签名都是从代码里实测导出的，不是凭记忆写的；但标注为「未验证」的部分确实没跑过。
 
-**当前状态**：226 项测试通过，ruff / mypy strict 全绿。`app/` 约 7800 行，`tests/` 约 1800 行。
+**当前状态**：289 项测试通过，ruff / mypy strict 全绿。`app/` 约 9100 行，`tests/` 约 2900 行。
+P0 + P1 已全部完成（§16.1 第 1–9 步）；P2（RAG / 记忆 / 知识库 / 评估）未开工。
 
 验证命令（Windows，仓库根目录）：
 
@@ -13,13 +14,14 @@
 .venv/Scripts/python.exe -m ruff check app tests scripts
 .venv/Scripts/python.exe -m mypy app scripts
 .venv/Scripts/python.exe -m app.cli chat --fake    # 离线跑完 10 问并出报告
+.venv/Scripts/python.exe -m uvicorn app.main:app --reload   # 需要先配 .env
 ```
 
 ---
 
 ## 1. 已完成且已接线
 
-按 `§16.1` 生成顺序，第 1–6 步完成：
+按 `§16.1` 生成顺序，第 1–9 步完成（P0 + P1 全部）：
 
 | 层 | 模块 | 说明 |
 |---|---|---|
@@ -29,17 +31,50 @@
 | LLM | `app/llm/{base,capability,gateway,retry,structured}.py` + `providers/` ×5 | 能力门控、故障转移、熔断、分级超时、容错 JSON |
 | Agent | `app/agents/` ×7 | planner / interviewer / quality / safety / analyst / critic / summarizer |
 | 状态机 | `app/graph/` | 10 节点按 phase 条件入口，可从任意阶段恢复 |
+| 持久化 | `app/storage/{db,models,repo}.py` | SQLAlchemy async + SQLite；SessionState 快照 + revision 乐观锁 + 危机审计 append-only |
+| HTTP API | `app/api/{app,errors,schemas,state,deps}.py` + `routes/` | 创建/提交/获取会话、健康检查、Prometheus 指标、错误码映射 |
+| 可观测性 | `app/observability/{metrics,logging}.py` | Prometheus 指标 + loguru JSON 日志（隐私脱敏） |
 | 工具 | `app/cli.py`、`scripts/probe_providers.py` | `tss doctor` / `tss chat --fake` / `tss-probe` |
 
 提示词在 `prompts/`，8 个模板都已挂 `_partials/user_data_notice.jinja2`（§3.7 sandwich 尾部约束）。
 
+**关于持久化的取舍**：P1 用 SQLite + 自己的 SessionState 快照 + revision 乐观锁，
+**没有**用 LangGraph checkpointer。理由：LangGraph 的 checkpoint 序列化含 dataclass 的
+GraphState（emissions/safety_action）有风险，而 SessionState 是纯 pydantic、JSON 可往返。
+revision 乐观锁是 §5.1/§5.2 明确设计的并发手段。P5 生产化时再评估是否引入
+Postgres checkpointer。
+
 ---
 
-## 2. 先修这个：上下文压缩只做了一半
+## 2. 上下文压缩（已接完）
 
-**这是唯一处于中间状态的地方，接手第一件事应该是把它接完。**
+> **状态：已完成。** 下表原本是"待办"，现在全部有调用方了。保留本节是为了让后人
+> 理解这套接线是怎么搭起来的，以及踩过的两个坑（见文末）。
 
-三个模块写完并通过了导入与类型检查，但**没有任何调用方**——也就是说 §6.3 的上下文压缩目前完全没生效，长会话仍然会触顶：
+压缩链路的完整接线：`listen._maybe_compress` → `_history_budget`（估额度）→
+`plan_compression`（纯函数决策）→ `Summarizer.summarize`（生成 + 自校验）→
+`merge_summaries`（增量合并）→ 写入 `state.summary`，再由 `ask` 节点传入 interviewer。
+
+已接线文件：
+- `app/graph/nodes/listen.py`：`_history_budget` / `_maybe_compress` 两个新函数，
+  在 `qa_pairs` 更新后、路由分支前调用
+- `app/graph/nodes/ask.py`：调 `interviewer.ask()` 时传 `summary`
+- `app/schemas/enums.py`：新增 `DegradeReason.HISTORY_COMPRESSED`
+- 测试：`tests/unit/test_compress.py`（17）、`tests/unit/test_summarizer.py`（19）、
+  `tests/integration/test_compression.py`（4）
+
+接线中发现并已修的两个坑（写进 §5 了）：
+
+1. **系统提示词 token 估算必须用中文**：`"x" * 1500` 会被 BPE 压成 225 token，
+   严重高估可用额度、推迟压缩触发，违背"宁可早压缩"。
+2. **压缩能否落地受 SUMMARIZE 门控约束**：SUMMARIZE 要求 `min_context ≥ 8000` 且
+   `min_output ≥ 800`。provider 窗口落在 `[4000, 8000)` 时能触发压缩、
+   但 summarize 会被能力门控拒绝——那是正确的降级（保留原文继续），不是 bug。
+
+---
+
+<details>
+<summary>以下是完成前的原始待办说明（已过时，仅存档）</summary>
 
 | 文件 | 状态 |
 |---|---|
@@ -126,24 +161,37 @@ merge_summaries(old: SessionSummary | None, new: SessionSummary) -> SessionSumma
 轮数不足 `MIN_PAIRS_TO_COMPRESS`、已被 `covered_indices` 覆盖、水位刚好等于阈值）。
 压缩策略错了的表现是"长会话突然触顶"，这种故障在生产上极难复现，所以单测值得写厚。
 
+</details>
+
 ---
 
-## 3. 未开工的部分
+## 3. 未开工的部分（P2）
 
-按 `§16.1` 剩余顺序。目录都还不存在（或只有空 `__init__.py`）：
+按 `§16.1` 剩余顺序（第 10、12、14 步）。目录都只有空 `__init__.py`（或不存在）：
 
-| 优先级 | 模块 | 路线文档 | 目录状态 |
+| 模块 | 路线文档 | 目录状态 | 依赖 |
 |---|---|---|---|
-| P1 | 持久化 + checkpointer | §5.2 | `app/storage/` 不存在 |
-| P1 | HTTP API（SSE 流式、幂等、并发） | §10 | `app/api/` 不存在 |
-| P1 | 可观测性（trace / 指标 / 成本） | §11 | `app/observability/` 不存在 |
-| P2 | 嵌入 + 检索 + Reranker | §7 | `app/embeddings/`、`app/rag/` 仅 `__init__.py` |
-| P2 | 记忆层与冲突消解 | §6 | `app/memory/` 仅 `__init__.py` |
-| P2 | 知识库 | §7 | `app/kb/` 仅 `__init__.py` |
-| P2 | RAG 评估 | §12 | `eval/` 不存在 |
+| 嵌入 + 检索 + Reranker | §7 | `app/embeddings/`、`app/rag/` 仅 `__init__.py` | 智谱 embedding API / 本地 BGE-M3 |
+| 记忆层与冲突消解 | §6 | `app/memory/` 仅 `__init__.py` | 嵌入层（用户历史检索） |
+| 知识库构建管线 | §7.7 | `app/kb/` 仅 `__init__.py` | Bocha / Tavily / OpenAlex（离线） |
+| RAG 评估 + 回归门禁 | §12 | `eval/` 不存在 | 检索层 + 标注集 |
+
+**P2 是智能增强，不是"让系统能跑"的必要条件。** 系统现在已能对外服务
+（创建会话 → 提问 → 分析报告），P2 加的是"跨会话记忆""提问范式检索""评估闭环"。
+它们都依赖外部服务（embedding / 向量库 / 搜索 API），无法纯离线完整验证。
 
 `config/` 目前只有 `crisis_resources.yaml`。§17 提到的 `config/providers.yaml`
-和 `config/task_models.yaml` 都还没有——前者要靠 `tss-probe` 生成。
+和 `config/task_models.yaml` 都还没有——前者靠 `tss-probe` 生成。
+
+### P1 已知的简化（P5 生产化时补）
+
+- **幂等**：§10.1 要求 `Idempotency-Key`，P1 用 revision 乐观锁兜底，真正的
+  Redis 幂等 + 分布式锁留到 P5（见 `routes/sessions.py` 注释）。
+- **SSE 流式**：§10.2 的事件类型已定义，但 P1 的 API 是"一轮一响应"，
+  没有做真正的流式推送（`events` 数组在响应体里一次性返回）。
+- **OTel trace**：§11.2 的 span 覆盖没接（需要 OpenTelemetry SDK），
+  只有 loguru JSON 日志 + Prometheus 指标。
+- **alembic 迁移**：P1 用 `create_all`，P5 换 Postgres 时再引入迁移。
 
 ---
 
@@ -191,3 +239,25 @@ minimind 只能在 provider 层直连做 CI 冒烟，不能进主流程。
    比"应命中"的多，是刻意的。
 5. **重试闭包按引用捕获循环变量**（ruff B023）：目前恰好正确，
    但一旦重试被推迟到循环外，就会静默对着错误的 provider 重试，日志里记的还是原来那个。
+6. **系统提示词 token 估算必须用中文**（压缩接线时踩到）：`"x" * 1500` 会被 BPE 压成
+   225 token，而真实中文提示词约 1200 token。用 ASCII 估算会严重高估可用额度、
+   推迟压缩触发，正好违背"宁可早压缩，不要晚触顶"。见 `listen.py` 的 `_SYSTEM_PROMPT_ESTIMATE`。
+7. **能力门控的 min_context / min_output 是硬约束**：SUMMARIZE 要求
+   `min_context ≥ 8000` 且 `min_output ≥ 800`。窗口落在 `[4000, 8000)` 的 provider
+   能过 ASK（min 4000）却过不了 SUMMARIZE——压缩会触发但 summarize 被门控拒绝，
+   这是正确的降级（保留原文继续），不要当成 bug 去"修"。
+8. **乐观锁的 `revision` 列与 `state_json` 必须同步**（storage 层踩到）：UPDATE 时
+   如果只把 `revision` 列 +1、而 `state_json` 里序列化的还是旧版本，下次 load 会读回
+   旧版本号，乐观锁形同虚设——而且不报错，只在第二次提交时莫名 409。
+   已修（`repo.py::update_with_revision` 序列化 `bumped`），并有回归测试
+   `test_revision_persists_after_reload` 守着。
+9. **裸 async generator 不支持 `async with`**：写 `async def session_ctx(): yield` 但
+   忘加 `@asynccontextmanager` 装饰器，会在运行时抛
+   "async_generator object does not support the asynchronous context manager protocol"。
+   见 `storage/db.py`。
+10. **持久化对象是 SessionState，不是 GraphState**：GraphState 含 dataclass
+    （emissions / safety_action）和运行时字段（inbox），不该进库。持久化前用
+    `extract_session_state` 剥掉运行时字段，恢复时从 SessionState 重新构造 GraphState。
+11. **IntEnum 字段的 API 序列化**：`Sharpness` 是 IntEnum，FastAPI 默认只接受整数
+    （1/2/3），传 "moderate" 会 422。`api/schemas.py` 加了 `field_validator(mode="before")`
+    把字符串名转成枚举，客户端才能传友好字符串。

@@ -107,3 +107,4 @@ class DegradeReason(StrEnum):
     QUESTION_GUARD_FALLBACK = "question_guard_fallback"  # 提问反复违规，降级到安全模板（§3.7）
     CRITIC_UNRESOLVED = "critic_unresolved"              # Critic 连续否决，输出带不确定性标注的报告
     INJECTION_STRIPPED = "injection_stripped"            # 用户输入中剥离了疑似注入指令（§3.7）
+    HISTORY_COMPRESSED = "history_compressed"            # 早期问答被压成摘要（§6.3，保真度下降）

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -197,9 +198,15 @@ def build_routes(settings: Settings) -> list[Route]:
     return routes
 
 
-def build_gateway(settings: Settings, *, budget: Budget | None = None) -> LLMGateway:
+def build_gateway(
+    settings: Settings,
+    *,
+    budget: Budget | None = None,
+    on_record: Callable[[Any], None] | None = None,
+) -> LLMGateway:
     return LLMGateway(
         routes=build_routes(settings),
         default_temperature=settings.llm_temperature,
         budget=budget,
+        on_record=on_record,
     )

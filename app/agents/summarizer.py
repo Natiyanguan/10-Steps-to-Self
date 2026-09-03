@@ -197,8 +197,14 @@ def merge_summaries(old: SessionSummary | None, new: SessionSummary) -> SessionS
     """把新摘要并入旧摘要（§6.3：压缩是增量的，会发生多次）。
 
     同维度的事实与情绪合并去重；逐字原话累积（它们是依据来源，不能丢）。
+
+    注意：**不**用 `old.is_empty` 做早退。`is_empty` 只看 by_dimension 与
+    preserved_quotes，而 `covered_indices` 同样是有意义的信息 ——
+    它标记"这些轮已经压缩过了"，丢了会导致重复压缩。
+    下面的合并逻辑对空 old 也能正确处理（union 空集合 = 保留 new），
+    所以那个早退既多余又有 bug。
     """
-    if old is None or old.is_empty:
+    if old is None:
         return new
 
     by_dim: dict[Dimension, DimensionSummary] = {d.dimension: d for d in old.by_dimension}

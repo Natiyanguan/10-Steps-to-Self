@@ -70,6 +70,7 @@ async def ask(state: GraphState, deps: Deps) -> dict[str, Any]:
                 concern=state.concern,
                 sharpness=state.sharpness,
                 recent_exchanges=_recent(state),
+                summary=state.summary.render() if state.summary else "",
                 crisis_mode=crisis_mode,
             )
         except InsufficientCapabilityError as exc:
